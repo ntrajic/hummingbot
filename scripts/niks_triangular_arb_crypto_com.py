@@ -34,7 +34,7 @@ PAIRS = ["SOL-USD", "SOL-USDT", "USDT-USD"]
 INSTRUMENTS = {"SOL-USD": "SOL_USD", "SOL-USDT": "SOL_USDT", "USDT-USD": "USDT_USD"}
 TICKER_URL = "https://api.crypto.com/exchange/v1/public/get-tickers"
 
-MIN_PROFIT = Decimal("0")     # fire on any positive profit (paper trade demo)
+MIN_PROFIT = Decimal("0.0001")  # only fire when profit > 0.01% (positive trades only)
 TRADE_USD  = Decimal("10")
 COOLDOWN   = 30
 
@@ -80,12 +80,14 @@ class NiksTriangularArb(StrategyV2Base):
         if time.time() - self._last_trade_ts < COOLDOWN:
             return
 
-        if self._profit_a >= self._profit_b and self._bal["USD"] >= TRADE_USD:
+        best = max(self._profit_a, self._profit_b)
+        if best <= MIN_PROFIT or self._bal["USD"] < TRADE_USD:
+            return
+        if self._profit_a >= self._profit_b:
             self._simulate_route_a(prices)
-            self._last_trade_ts = time.time()
-        elif self._profit_b > self._profit_a and self._bal["USD"] >= TRADE_USD:
+        else:
             self._simulate_route_b(prices)
-            self._last_trade_ts = time.time()
+        self._last_trade_ts = time.time()
 
     async def _fetch_prices_rest(self) -> Optional[Dict]:
         try:
