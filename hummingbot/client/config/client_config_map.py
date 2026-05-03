@@ -201,6 +201,7 @@ class PaperTradeConfigMap(BaseClientModel):
             KuCoinConfigMap.model_config["title"],
             KrakenConfigMap.model_config["title"],
             GateIOConfigMap.model_config["title"],
+            "crypto_com",
         ],
     )
     paper_trade_account_balance: Dict[str, float] = Field(

@@ -1,17 +1,56 @@
 from decimal import Decimal
-from typing import Dict, Any
+from typing import Any, Dict
 
+from pydantic import ConfigDict, Field, SecretStr
+
+from hummingbot.client.config.config_data_types import BaseConnectorConfigMap
 from hummingbot.connector.exchange.crypto_com import crypto_com_constants as CONSTANTS
 from hummingbot.core.data_type.common import OrderType, TradeType
+from hummingbot.core.data_type.trade_fee import TradeFeeSchema
 
+CENTRALIZED = True
+EXAMPLE_PAIR = "SOL-USDC"
+
+# 0% taker fee for SOL/USDC as granted; maker also 0 for simplicity
+DEFAULT_FEES = TradeFeeSchema(
+    maker_percent_fee_decimal=Decimal("0"),
+    taker_percent_fee_decimal=Decimal("0"),
+)
+
+
+class CryptoComConfigMap(BaseConnectorConfigMap):
+    connector: str = "crypto_com"
+    crypto_com_api_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": lambda cm: "Enter your Crypto.com Exchange API key",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    crypto_com_secret_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": lambda cm: "Enter your Crypto.com Exchange secret key",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    model_config = ConfigDict(title="crypto_com")
+
+
+KEYS = CryptoComConfigMap.model_construct()
+
+
+# ── Helpers used by the exchange connector ────────────────────────────────────
 
 def trading_pair_to_instrument(trading_pair: str) -> str:
-    """SOL-USDC -> SOL_USDC"""
     return trading_pair.replace("-", "_")
 
 
 def instrument_to_trading_pair(instrument: str) -> str:
-    """SOL_USDC -> SOL-USDC"""
     return instrument.replace("_", "-")
 
 
@@ -21,20 +60,3 @@ def order_type_to_str(order_type: OrderType) -> str:
 
 def trade_type_to_side(trade_type: TradeType) -> str:
     return CONSTANTS.ORDER_SIDE_BUY if trade_type == TradeType.BUY else CONSTANTS.ORDER_SIDE_SELL
-
-
-def parse_order_status(status: str) -> str:
-    return {
-        CONSTANTS.ORDER_STATUS_ACTIVE: "OPEN",
-        CONSTANTS.ORDER_STATUS_FILLED: "FILLED",
-        CONSTANTS.ORDER_STATUS_CANCELED: "CANCELED",
-        CONSTANTS.ORDER_STATUS_REJECTED: "FAILED",
-        CONSTANTS.ORDER_STATUS_EXPIRED: "CANCELED",
-    }.get(status, status)
-
-
-def get_new_client_order_id(is_buy: bool, trading_pair: str) -> str:
-    import time
-    side = "B" if is_buy else "S"
-    pair = trading_pair.replace("-", "")[:6]
-    return f"niks_{side}_{pair}_{int(time.time() * 1000)}"
