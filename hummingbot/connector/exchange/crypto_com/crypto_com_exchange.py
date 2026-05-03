@@ -108,9 +108,17 @@ class CryptoComExchange(ExchangePyBase):
         from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
         return _NullOrderBookDataSource(trading_pairs=self._trading_pairs, connector=self)
 
-    def _create_user_stream_tracker(self):
-        from hummingbot.core.data_type.user_stream_tracker import UserStreamTracker
-        return UserStreamTracker(data_source=_NullUserStreamDataSource())
+    def _create_user_stream_data_source(self) -> UserStreamTrackerDataSource:
+        return _NullUserStreamDataSource()
+
+    def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
+        from bidict import bidict
+        mapping = bidict()
+        for inst in exchange_info.get("data", []):
+            symbol = inst.get("symbol", "")
+            if symbol:
+                mapping[symbol] = utils.instrument_to_trading_pair(symbol)
+        self._set_trading_pair_symbol_map(mapping)
 
     # ── Exception helpers ─────────────────────────────────────────────────────
 
@@ -258,17 +266,6 @@ class CryptoComExchange(ExchangePyBase):
 
     # ── Symbol map ────────────────────────────────────────────────────────────
 
-    async def _initialize_trading_pair_symbol_map(self):
-        result = await self._api_get(path_url=CONSTANTS.GET_INSTRUMENTS)
-        mapping = bidict()
-        for inst in result.get("data", []):
-            symbol = inst.get("symbol", "")
-            if not symbol:
-                continue
-            hb_pair = utils.instrument_to_trading_pair(symbol)
-            mapping[symbol] = hb_pair
-        self._set_trading_pair_symbol_map(mapping)
-
     async def _api_get(self, path_url: str, params: Optional[Dict] = None) -> Dict:
         rest_assistant = await self._web_assistants_factory.get_rest_assistant()
         url = web_utils.public_rest_url(path_url)
@@ -302,6 +299,12 @@ class _NullOrderBookDataSource(OrderBookTrackerDataSource):
         pass
 
     async def _connected_websocket_assistant(self):
+        pass
+
+    async def subscribe_to_trading_pair(self, trading_pair: str):
+        pass
+
+    async def unsubscribe_from_trading_pair(self, trading_pair: str):
         pass
 
     async def listen_for_subscriptions(self):
