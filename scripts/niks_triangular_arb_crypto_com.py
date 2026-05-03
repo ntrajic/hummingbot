@@ -61,6 +61,10 @@ class NiksTriangularArb(StrategyV2Base):
     def create_actions_proposal(self): return []
     def stop_actions_proposal(self):   return []
 
+    # Override tick to bypass ready_to_trade — we use REST prices, not order book
+    def tick(self, timestamp: float):
+        self.on_tick()
+
     # ── Tick ──────────────────────────────────────────────────────────────────
 
     def on_tick(self):
@@ -163,10 +167,14 @@ class NiksTriangularArb(StrategyV2Base):
     # ── Status ────────────────────────────────────────────────────────────────
 
     def format_status(self) -> str:
-        if not self.ready_to_trade:
-            return "Connectors not ready."
-        lines = ["", "  Balances:"]
-        lines += ["    " + l for l in self.get_balance_df().to_string(index=False).split("\n")]
+        lines = ["", "  Balances (crypto_com_paper_trade):"]
+        try:
+            connector = self.connectors[CONNECTOR]
+            for asset in ["USD", "SOL", "USDT"]:
+                bal = connector.get_balance(asset)
+                lines.append(f"    {asset:6s}: {float(bal):.4f}")
+        except Exception:
+            lines.append("    (not yet available)")
         lines += ["", f"  Cycles executed: {self._trade_count} | Threshold: {float(MIN_PROFIT*100):.2f}%"]
         if self._prices:
             p = self._prices
