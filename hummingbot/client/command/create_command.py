@@ -284,6 +284,8 @@ class CreateCommand:
         new_config_value = None
         if not self.app.to_stop_config and input_value is not None:
             try:
+                if isinstance(input_value, str):
+                    input_value = input_value.strip()
                 setattr(model, config, input_value)
                 new_config_value = getattr(model, config)
             except ConfigValidationError as e:

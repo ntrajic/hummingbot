@@ -1,0 +1,13 @@
+script_file_name: sol_spread_scanner.py
+controllers_config: []
+
+trading_pair: SOL-USD
+
+# Paper budget cap — real $14.26 is never touched
+order_amount_usd: "14.26"
+
+# Flag as culprit when spread >= this % of mid price
+min_spread_pct: "0.002"
+
+# Scan interval in seconds
+scan_interval: 10
