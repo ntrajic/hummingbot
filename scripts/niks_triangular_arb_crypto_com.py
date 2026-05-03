@@ -33,7 +33,7 @@ INSTRUMENTS = {"SOL-USD": "SOL_USD", "SOL-USDT": "SOL_USDT", "USDT-USD": "USDT_U
 
 TICKER_URL = "https://api.crypto.com/exchange/v1/public/get-tickers"
 
-MIN_PROFIT  = Decimal("0.002")   # 0.2% — covers taker fees with margin
+MIN_PROFIT  = Decimal("0.0001")  # 0.01% — fires on any real spread (paper trade testing)
 TRADE_USD   = Decimal("10")      # notional per cycle
 COOLDOWN    = 30                 # seconds between cycles
 

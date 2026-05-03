@@ -246,7 +246,7 @@ def test_status_output():
     status = bot.format_status()
     check("status contains Route A", "Route A" in status)
     check("status contains Route B", "Route B" in status)
-    check("status contains threshold", "0.20%" in status)
+    check("status contains threshold", "0.01%" in status)
     check("status shows FIRING when profitable", "FIRING" in status)
     print("\n     Status preview:")
     for line in status.split("\n")[:15]:
