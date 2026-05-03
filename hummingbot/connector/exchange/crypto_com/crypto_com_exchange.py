@@ -142,7 +142,8 @@ class CryptoComExchange(ExchangePyBase):
         path = "/" + method
         rest_assistant = await self._web_assistants_factory.get_rest_assistant()
         url = web_utils.private_rest_url(path)
-        request = RESTRequest(method=RESTMethod.POST, url=url, data=json.dumps(body), is_auth_required=False)
+        request = RESTRequest(method=RESTMethod.POST, url=url, data=json.dumps(body),
+                              headers={"Content-Type": "application/json"}, is_auth_required=False)
         async with self._throttler.execute_task(limit_id=path):
             response = await rest_assistant.call(request)
         data = await response.json()
