@@ -20,11 +20,8 @@ from hummingbot.strategy_v2.executors.data_types import ConnectorPair
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction
 
-# 30 major exchanges — use paper_trade variants so no API keys are required.
-# Price data comes from real-time public order books; only execution uses crypto_com_paper_trade.
+# Exchanges confirmed working from this environment (binance geo-blocked, ndax/btc_markets/dexalot/hyperliquid WS failures removed)
 SCAN_EXCHANGES: List[Tuple[str, str]] = [
-    ("binance_paper_trade",          "SOL-USDC"),
-    ("binance_paper_trade",          "SOL-USDT"),
     ("okx_paper_trade",              "SOL-USDC"),
     ("okx_paper_trade",              "SOL-USDT"),
     ("bybit_paper_trade",            "SOL-USDC"),
@@ -45,13 +42,9 @@ SCAN_EXCHANGES: List[Tuple[str, str]] = [
     ("bing_x_paper_trade",           "SOL-USDT"),
     ("bitrue_paper_trade",           "SOL-USDT"),
     ("ascend_ex_paper_trade",        "SOL-USDT"),
-    ("hyperliquid_paper_trade",      "SOL-USDC"),
     ("derive_paper_trade",           "SOL-USDC"),
     ("backpack_paper_trade",         "SOL-USDC"),
-    ("dexalot_paper_trade",          "SOL-USDC"),
     ("bitstamp_paper_trade",         "SOL-USDC"),
-    ("btc_markets_paper_trade",      "SOL-USDT"),
-    ("ndax_paper_trade",             "SOL-USDT"),
 ]
 
 EXEC_CONNECTOR = "crypto_com_paper_trade"
