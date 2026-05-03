@@ -203,7 +203,6 @@ class PaperTradeConfigMap(BaseClientModel):
             GateIOConfigMap.model_config["title"],
             "crypto_com",
             "okx",
-            "bybit",
             "bitget",
             "mexc",
             "htx",

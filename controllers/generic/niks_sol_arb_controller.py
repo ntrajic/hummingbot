@@ -24,8 +24,6 @@ from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction,
 SCAN_EXCHANGES: List[Tuple[str, str]] = [
     ("okx_paper_trade",              "SOL-USDC"),
     ("okx_paper_trade",              "SOL-USDT"),
-    ("bybit_paper_trade",            "SOL-USDC"),
-    ("bybit_paper_trade",            "SOL-USDT"),
     ("kucoin_paper_trade",           "SOL-USDC"),
     ("kucoin_paper_trade",           "SOL-USDT"),
     ("gate_io_paper_trade",          "SOL-USDC"),
