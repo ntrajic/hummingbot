@@ -48,7 +48,6 @@ SCAN_EXCHANGES: List[Tuple[str, str]] = [
     ("hyperliquid_paper_trade",      "SOL-USDC"),
     ("derive_paper_trade",           "SOL-USDC"),
     ("backpack_paper_trade",         "SOL-USDC"),
-    ("vertex_paper_trade",           "SOL-USDC"),
     ("dexalot_paper_trade",          "SOL-USDC"),
     ("bitstamp_paper_trade",         "SOL-USDC"),
     ("btc_markets_paper_trade",      "SOL-USDT"),

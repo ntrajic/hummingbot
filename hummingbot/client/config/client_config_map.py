@@ -215,7 +215,6 @@ class PaperTradeConfigMap(BaseClientModel):
             "hyperliquid",
             "derive",
             "backpack",
-            "vertex",
             "dexalot",
             "bitstamp",
             "btc_markets",
