@@ -37,13 +37,16 @@ class CryptoComExchange(ExchangePyBase):
         trading_pairs: Optional[List[str]] = None,
         trading_required: bool = True,
         domain: str = "com",
+        balance_asset_limit: Optional[Dict[str, Dict[str, Decimal]]] = None,
+        rate_limits_share_pct: Decimal = Decimal("100"),
     ):
         self.api_key = crypto_com_api_key
         self.secret_key = crypto_com_secret_key
         self._domain = domain
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs or []
-        super().__init__()
+        super().__init__(balance_asset_limit=balance_asset_limit,
+                         rate_limits_share_pct=rate_limits_share_pct)
 
     # ── Identity ──────────────────────────────────────────────────────────────
 
