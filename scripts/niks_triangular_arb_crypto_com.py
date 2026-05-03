@@ -1,14 +1,18 @@
 """
 niks_triangular_arb_crypto_com.py
 ==================================
-Triangular arbitrage on crypto.com — paper trade mode.
+Triangular arbitrage on crypto.com — paper trade simulation.
 
-Prices fetched directly from crypto.com public REST API (no order book needed).
-Orders placed on crypto_com_paper_trade (simulated fills, real price data).
+Prices: fetched from crypto.com public REST API every tick.
+Orders: simulated in-memory (paper trade connector rejects orders because
+        _NullOrderBookDataSource never populates _trading_pairs).
 
 Triangle routes on SOL / USD / USDT:
   Route A: USD → buy SOL_USD → SOL → sell SOL_USDT → USDT → sell USDT_USD → USD
   Route B: USD → buy USDT_USD → USDT → buy SOL_USDT → SOL → sell SOL_USD → USD
+
+`status`  — shows live prices, profit %, simulated balances, trade count
+`history` — use `tail -f logs/logs_conf_niks_triangular_arb_crypto_com.log | grep TRI`
 
 Start:
   start --script niks_triangular_arb_crypto_com.py --conf conf_niks_triangular_arb_crypto_com.yml
@@ -27,15 +31,12 @@ from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2Confi
 
 CONNECTOR = "crypto_com_paper_trade"
 PAIRS = ["SOL-USD", "SOL-USDT", "USDT-USD"]
-
-# crypto.com instrument names (underscore format)
 INSTRUMENTS = {"SOL-USD": "SOL_USD", "SOL-USDT": "SOL_USDT", "USDT-USD": "USDT_USD"}
-
 TICKER_URL = "https://api.crypto.com/exchange/v1/public/get-tickers"
 
-MIN_PROFIT  = Decimal("0")       # paper trade: fire on any positive profit to validate fills
-TRADE_USD   = Decimal("10")      # notional per cycle
-COOLDOWN    = 30                 # seconds between cycles
+MIN_PROFIT = Decimal("0")     # fire on any positive profit (paper trade demo)
+TRADE_USD  = Decimal("10")
+COOLDOWN   = 30
 
 
 class NiksTriangularArbConfig(StrategyV2ConfigBase):
@@ -54,21 +55,18 @@ class NiksTriangularArb(StrategyV2Base):
         self._last_trade_ts: float = 0.0
         self._trade_count: int = 0
         self._prices: Dict[str, Dict[str, Decimal]] = {}
-        self._profit_a: Decimal = Decimal("0")
-        self._profit_b: Decimal = Decimal("0")
+        self._profit_a = Decimal("0")
+        self._profit_b = Decimal("0")
         self._fetch_task: Optional[asyncio.Task] = None
+        # Simulated balances (paper trade)
+        self._bal = {"USD": Decimal("14.26"), "SOL": Decimal("0"), "USDT": Decimal("0")}
+        self._pnl = Decimal("0")   # cumulative USD profit
 
     def create_actions_proposal(self): return []
     def stop_actions_proposal(self):   return []
 
-    # Override tick to bypass ready_to_trade — we use REST prices, not order book
     def tick(self, timestamp: float):
-        self.on_tick()
-
-    # ── Tick ──────────────────────────────────────────────────────────────────
-
-    def on_tick(self):
-        # Kick off async price fetch if not already running
+        # Bypass ready_to_trade — prices come from REST, not order book
         if self._fetch_task is None or self._fetch_task.done():
             self._fetch_task = asyncio.ensure_future(self._fetch_and_trade())
 
@@ -79,103 +77,88 @@ class NiksTriangularArb(StrategyV2Base):
         self._prices = prices
         self._profit_a, self._profit_b = self._compute_profits(prices)
 
-        now = time.time()
-        if now - self._last_trade_ts < COOLDOWN:
+        if time.time() - self._last_trade_ts < COOLDOWN:
             return
 
-        if self._profit_a >= MIN_PROFIT:
-            self._execute_route_a(prices)
-            self._last_trade_ts = now
-        elif self._profit_b >= MIN_PROFIT:
-            self._execute_route_b(prices)
-            self._last_trade_ts = now
+        if self._profit_a >= self._profit_b and self._bal["USD"] >= TRADE_USD:
+            self._simulate_route_a(prices)
+            self._last_trade_ts = time.time()
+        elif self._profit_b > self._profit_a and self._bal["USD"] >= TRADE_USD:
+            self._simulate_route_b(prices)
+            self._last_trade_ts = time.time()
 
-    # ── REST price fetch ──────────────────────────────────────────────────────
-
-    async def _fetch_prices_rest(self) -> Optional[Dict[str, Dict[str, Decimal]]]:
+    async def _fetch_prices_rest(self) -> Optional[Dict]:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(TICKER_URL, timeout=aiohttp.ClientTimeout(total=3)) as resp:
-                    data = await resp.json()
+            async with aiohttp.ClientSession() as s:
+                async with s.get(TICKER_URL, timeout=aiohttp.ClientTimeout(total=3)) as r:
+                    data = await r.json()
             tickers = {t["i"]: t for t in data.get("result", {}).get("data", [])}
             prices = {}
-            for pair, instrument in INSTRUMENTS.items():
-                t = tickers.get(instrument)
+            for pair, inst in INSTRUMENTS.items():
+                t = tickers.get(inst)
                 if not t:
                     return None
-                bid = Decimal(str(t["b"]))
-                ask = Decimal(str(t["k"]))
-                if bid <= 0 or ask <= 0:
-                    return None
-                prices[pair] = {"bid": bid, "ask": ask}
+                prices[pair] = {"bid": Decimal(str(t["b"])), "ask": Decimal(str(t["k"]))}
             return prices
         except Exception as e:
-            self.logger().debug(f"Price fetch error: {e}")
+            self.logger().debug(f"REST fetch error: {e}")
             return None
 
-    # ── Profit calculation ────────────────────────────────────────────────────
-
     def _compute_profits(self, p: Dict) -> Tuple[Decimal, Decimal]:
-        # Route A: 1 USD → SOL → USDT → USD
-        sol_a   = Decimal("1") / p["SOL-USD"]["ask"]
-        usdt_a  = sol_a * p["SOL-USDT"]["bid"]
-        final_a = usdt_a * p["USDT-USD"]["bid"]
+        sol_a  = Decimal("1") / p["SOL-USD"]["ask"]
+        usdt_a = sol_a * p["SOL-USDT"]["bid"]
+        pa     = usdt_a * p["USDT-USD"]["bid"] - Decimal("1")
 
-        # Route B: 1 USD → USDT → SOL → USD
-        usdt_b  = Decimal("1") / p["USDT-USD"]["ask"]
-        sol_b   = usdt_b / p["SOL-USDT"]["ask"]
-        final_b = sol_b * p["SOL-USD"]["bid"]
+        usdt_b = Decimal("1") / p["USDT-USD"]["ask"]
+        sol_b  = usdt_b / p["SOL-USDT"]["ask"]
+        pb     = sol_b * p["SOL-USD"]["bid"] - Decimal("1")
+        return pa, pb
 
-        return final_a - Decimal("1"), final_b - Decimal("1")
+    def _simulate_route_a(self, p: Dict):
+        """USD → SOL → USDT → USD"""
+        usd_in   = TRADE_USD
+        sol      = usd_in / p["SOL-USD"]["ask"]
+        usdt     = sol * p["SOL-USDT"]["bid"]
+        usd_out  = usdt * p["USDT-USD"]["bid"]
+        profit   = usd_out - usd_in
 
-    # ── Order execution ───────────────────────────────────────────────────────
-
-    def _execute_route_a(self, p: Dict):
-        sol_amt  = round(TRADE_USD / p["SOL-USD"]["ask"], 4)
-        usdt_amt = round(sol_amt * p["SOL-USDT"]["bid"], 4)
+        self._bal["USD"] += profit
+        self._pnl        += profit
         self._trade_count += 1
-        self.logger().info(
-            f"[TRI #{self._trade_count} A] {float(self._profit_a*100):+.4f}% | "
-            f"BUY {sol_amt} SOL@{p['SOL-USD']['ask']} USD | "
-            f"SELL {sol_amt} SOL@{p['SOL-USDT']['bid']} USDT | "
-            f"SELL {usdt_amt} USDT@{p['USDT-USD']['bid']} USD"
-        )
-        try:
-            self.buy( CONNECTOR, "SOL-USD",  sol_amt,  OrderType.MARKET, p["SOL-USD"]["ask"])
-            self.sell(CONNECTOR, "SOL-USDT", sol_amt,  OrderType.MARKET, p["SOL-USDT"]["bid"])
-            self.sell(CONNECTOR, "USDT-USD", usdt_amt, OrderType.MARKET, p["USDT-USD"]["bid"])
-        except Exception as e:
-            self.logger().error(f"[TRI #{self._trade_count} A] failed: {e}")
 
-    def _execute_route_b(self, p: Dict):
-        usdt_amt = round(TRADE_USD / p["USDT-USD"]["ask"], 4)
-        sol_amt  = round(usdt_amt / p["SOL-USDT"]["ask"], 4)
+        self.logger().info(
+            f"[TRI #{self._trade_count} A] profit={float(profit):.6f} USD ({float(self._profit_a*100):+.4f}%) | "
+            f"USD→{float(sol):.4f}SOL→{float(usdt):.4f}USDT→{float(usd_out):.4f}USD | "
+            f"balance USD={float(self._bal['USD']):.4f} | cumPnL={float(self._pnl):.6f}"
+        )
+
+    def _simulate_route_b(self, p: Dict):
+        """USD → USDT → SOL → USD"""
+        usd_in   = TRADE_USD
+        usdt     = usd_in / p["USDT-USD"]["ask"]
+        sol      = usdt / p["SOL-USDT"]["ask"]
+        usd_out  = sol * p["SOL-USD"]["bid"]
+        profit   = usd_out - usd_in
+
+        self._bal["USD"] += profit
+        self._pnl        += profit
         self._trade_count += 1
-        self.logger().info(
-            f"[TRI #{self._trade_count} B] {float(self._profit_b*100):+.4f}% | "
-            f"BUY {usdt_amt} USDT@{p['USDT-USD']['ask']} USD | "
-            f"BUY {sol_amt} SOL@{p['SOL-USDT']['ask']} USDT | "
-            f"SELL {sol_amt} SOL@{p['SOL-USD']['bid']} USD"
-        )
-        try:
-            self.buy( CONNECTOR, "USDT-USD", usdt_amt, OrderType.MARKET, p["USDT-USD"]["ask"])
-            self.buy( CONNECTOR, "SOL-USDT", sol_amt,  OrderType.MARKET, p["SOL-USDT"]["ask"])
-            self.sell(CONNECTOR, "SOL-USD",  sol_amt,  OrderType.MARKET, p["SOL-USD"]["bid"])
-        except Exception as e:
-            self.logger().error(f"[TRI #{self._trade_count} B] failed: {e}")
 
-    # ── Status ────────────────────────────────────────────────────────────────
+        self.logger().info(
+            f"[TRI #{self._trade_count} B] profit={float(profit):.6f} USD ({float(self._profit_b*100):+.4f}%) | "
+            f"USD→{float(usdt):.4f}USDT→{float(sol):.4f}SOL→{float(usd_out):.4f}USD | "
+            f"balance USD={float(self._bal['USD']):.4f} | cumPnL={float(self._pnl):.6f}"
+        )
 
     def format_status(self) -> str:
-        lines = ["", "  Balances (crypto_com_paper_trade):"]
-        try:
-            connector = self.connectors[CONNECTOR]
-            for asset in ["USD", "SOL", "USDT"]:
-                bal = connector.get_balance(asset)
-                lines.append(f"    {asset:6s}: {float(bal):.4f}")
-        except Exception:
-            lines.append("    (not yet available)")
-        lines += ["", f"  Cycles executed: {self._trade_count} | Threshold: {float(MIN_PROFIT*100):.2f}%"]
+        lines = [
+            "",
+            "  Simulated Balances:",
+            f"    USD : {float(self._bal['USD']):.4f}",
+            f"    Cumulative PnL: {float(self._pnl):+.6f} USD",
+            "",
+            f"  Cycles: {self._trade_count} | Threshold: {float(MIN_PROFIT*100):.2f}% | Cooldown: {COOLDOWN}s",
+        ]
         if self._prices:
             p = self._prices
             lines += ["", "  Live prices (crypto.com REST):"]
@@ -185,8 +168,8 @@ class NiksTriangularArb(StrategyV2Base):
                 "",
                 f"  Route A (USD→SOL→USDT→USD): {float(self._profit_a*100):+.4f}%",
                 f"  Route B (USD→USDT→SOL→USD): {float(self._profit_b*100):+.4f}%",
-                f"  {'🟢 FIRING' if max(self._profit_a, self._profit_b) >= MIN_PROFIT else '🔴 below threshold'}",
+                f"  {'🟢 WILL FIRE' if max(self._profit_a, self._profit_b) > MIN_PROFIT else '🔴 both negative'}",
             ]
         else:
-            lines += ["", "  Waiting for price data..."]
+            lines.append("  Fetching prices...")
         return "\n".join(lines)
