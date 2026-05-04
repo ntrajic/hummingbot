@@ -81,6 +81,9 @@ class AmmTriArbSol(StrategyV2Base):
     _scanning: bool = False
     _total_scans: int = 0
     _total_trades: int = 0
+    _total_reverts: int = 0      # on-chain reverts / gateway errors during execution
+    _total_skips: int = 0        # quotes below min_profitability threshold
+    _total_stale: int = 0        # quotes aborted due to max_quote_age_ms
     _total_profit_usdc: Decimal = Decimal("0")
     _last_quote: Optional[Dict] = None
 
@@ -113,29 +116,37 @@ class AmmTriArbSol(StrategyV2Base):
             self._last_quote = quote
             self._total_scans += 1
 
+            # --- Staleness gate (before profitability to avoid false FIRE log) ---
+            if quote["elapsed_ms"] > self.config.max_quote_age_ms:
+                self._total_stale += 1
+                self.log_with_clock(
+                    logging.WARNING,
+                    f"[SCAN #{self._total_scans}] Quotes stale "
+                    f"({quote['elapsed_ms']:.0f}ms > {self.config.max_quote_age_ms}ms). Skipping."
+                )
+                return
+
             net_out = quote["net_out_usdc"]
             profit_pct = (net_out - self.config.order_amount) / self.config.order_amount * 100
             threshold = self.config.order_amount * (1 + self.config.min_profitability / 100)
+
+            # --- Profitability gate ---
+            if net_out < threshold:
+                self._total_skips += 1
+                self.log_with_clock(
+                    logging.INFO,
+                    f"[SCAN #{self._total_scans}] "
+                    f"net_out={net_out:.4f} USDC  profit={profit_pct:.3f}%  "
+                    f"quote_ms={quote['elapsed_ms']:.0f}  ⏳ below {self.config.min_profitability}%"
+                )
+                return
 
             self.log_with_clock(
                 logging.INFO,
                 f"[SCAN #{self._total_scans}] "
                 f"net_out={net_out:.4f} USDC  profit={profit_pct:.3f}%  "
-                f"quote_ms={quote['elapsed_ms']:.0f}  "
-                f"{'✅ FIRE' if net_out >= threshold else '⏳ skip'}"
+                f"quote_ms={quote['elapsed_ms']:.0f}  ✅ FIRE"
             )
-
-            if net_out < threshold:
-                return
-
-            if quote["elapsed_ms"] > self.config.max_quote_age_ms:
-                self.log_with_clock(
-                    logging.WARNING,
-                    f"[SCAN #{self._total_scans}] Quotes too stale "
-                    f"({quote['elapsed_ms']:.0f}ms > {self.config.max_quote_age_ms}ms). Skipping."
-                )
-                return
-
             await self._execute_triangle(quote, profit_pct)
 
         except Exception as e:
@@ -146,6 +157,29 @@ class AmmTriArbSol(StrategyV2Base):
     # ------------------------------------------------------------------
     # Quote all three legs
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_amount(response: dict, input_amount: Decimal) -> Decimal:
+        """
+        Extract output amount from a Gateway quote_swap response.
+        Tries keys in order: expectedAmount, amount, then price * input_amount.
+        Returns Decimal("0") if nothing usable is found.
+        """
+        for key in ("expectedAmount", "amount"):
+            val = response.get(key)
+            if val is not None:
+                try:
+                    return Decimal(str(val))
+                except Exception:
+                    pass
+        # Fallback: price field × input amount (some Gateway versions return this)
+        price = response.get("price")
+        if price is not None:
+            try:
+                return Decimal(str(price)) * input_amount
+            except Exception:
+                pass
+        return Decimal("0")
 
     async def _get_triangle_quote(self) -> Optional[Dict]:
         """
@@ -169,7 +203,7 @@ class AmmTriArbSol(StrategyV2Base):
                 trading_type="router",
                 slippage_pct=slippage,
             )
-            sol_amount = Decimal(str(q1.get("expectedAmount") or q1.get("amount") or 0))
+            sol_amount = self._parse_amount(q1, amount)
             if sol_amount <= 0:
                 return None
 
@@ -184,7 +218,7 @@ class AmmTriArbSol(StrategyV2Base):
                 trading_type="router",
                 slippage_pct=slippage,
             )
-            usdt_amount = Decimal(str(q2.get("expectedAmount") or q2.get("amount") or 0))
+            usdt_amount = self._parse_amount(q2, sol_amount)
             if usdt_amount <= 0:
                 return None
 
@@ -199,7 +233,7 @@ class AmmTriArbSol(StrategyV2Base):
                 trading_type="router",
                 slippage_pct=slippage,
             )
-            net_out_usdc = Decimal(str(q3.get("expectedAmount") or q3.get("amount") or 0))
+            net_out_usdc = self._parse_amount(q3, usdt_amount)
             if net_out_usdc <= 0:
                 return None
 
@@ -280,10 +314,11 @@ class AmmTriArbSol(StrategyV2Base):
             self.notify_hb_app_with_timestamp(msg)
 
         except Exception as e:
-            # On-chain revert or gateway error — funds are safe
+            # On-chain revert or gateway error — funds are safe (Solana atomic tx)
+            self._total_reverts += 1
             self.log_with_clock(
                 logging.WARNING,
-                f"[TRI-ARB] ⚠️ Execution reverted (funds safe): {e}"
+                f"[TRI-ARB] ⚠️ Revert #{self._total_reverts} (funds safe): {e}"
             )
 
     # ------------------------------------------------------------------
@@ -301,7 +336,10 @@ class AmmTriArbSol(StrategyV2Base):
             f"Slippage: {self.config.slippage_pct}%",
             f"  Scans: {self._total_scans}  |  "
             f"Trades: {self._total_trades}  |  "
-            f"Cumulative profit: +{self._total_profit_usdc:.4f} USDC",
+            f"Skips: {self._total_skips}  |  "
+            f"Reverts: {self._total_reverts}  |  "
+            f"Stale: {self._total_stale}",
+            f"  Cumulative profit: +{self._total_profit_usdc:.4f} USDC",
             "",
         ]
         if self._last_quote:
