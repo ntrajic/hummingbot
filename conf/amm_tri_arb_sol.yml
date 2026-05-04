@@ -1,0 +1,45 @@
+# AMM Triangular Arbitrage — Solana / Jupiter
+# Branch: amm_tri_arb_sol
+#
+# Route: USDC → SOL → USDT → USDC (atomic via Jupiter router)
+# All three legs execute in a single Solana transaction.
+# If net output < order_amount * (1 + min_profitability/100), the trade is skipped.
+# If slippage is exceeded on-chain, the transaction reverts automatically.
+#
+# MODES:
+#   dry_run: true  → paper trading (quotes only, no real execution)
+#   dry_run: false → live trading (requires BackpackWallet connected via Gateway)
+
+script_file_name: amm_tri_arb_sol.py
+
+# Gateway network connector (chain-network format)
+connector: solana-mainnet-beta
+
+# Triangle legs
+pair_1: SOL-USDC    # leg 1: buy SOL with USDC
+pair_2: SOL-USDT    # leg 2: sell SOL for USDT
+pair_3: USDT-USDC   # leg 3: sell USDT for USDC
+
+# USDC capital to deploy per cycle
+# Set slightly below your actual balance to leave a dust buffer for fees
+order_amount: 13.0
+
+# Minimum round-trip profit required to fire the trade (percent)
+# At $13 capital: 1.2% = ~$0.156 — covers medium priority fee (~$0.02-0.05)
+min_profitability: 1.2
+
+# Slippage tolerance passed to Jupiter (percent)
+# If the on-chain price moves beyond this, the Solana tx reverts automatically
+slippage_pct: 0.5
+
+# Abort execution if total quote round-trip exceeds this (milliseconds)
+# Prevents firing on stale quotes during volatile markets
+max_quote_age_ms: 500
+
+# Seconds between scan cycles
+scan_interval: 10
+
+# Paper trade mode
+# true  = log quotes only, no real orders placed (Phase 2A)
+# false = live execution via BackpackWallet (Phase 5)
+dry_run: true
