@@ -40,8 +40,19 @@ max_quote_age_ms: 500
 scan_interval: 10
 
 # Paper trade mode
-# true  = log quotes only, no real orders placed (Phase 2A)
+# true  = log quotes only, no real orders placed (Phase 2A / testing)
 # false = live execution via BackpackWallet (Phase 5)
+#
+# PRE-FLIGHT CHECKLIST before setting dry_run: false
+# ---------------------------------------------------
+# [ ] gateway connect solana  (paste BackpackWallet private key)
+# [ ] Update defaultWallet in gateway-files/conf/chains/solana.yml
+# [ ] gateway balance solana-mainnet-beta  → confirm USDC and SOL visible
+# [ ] SOL balance >= 0.05 SOL  (gas reserve)
+# [ ] USDC balance >= order_amount / 0.95  (e.g. >= 13.68 for order_amount=13.0)
+# [ ] telegram_token and telegram_chat_id set (optional but recommended)
+# [ ] Ran in dry_run: true for at least 1 hour with no errors in logs
+# [ ] Confirmed Gateway is online: gateway status
 dry_run: true
 
 # Telegram alerts — profit-only notifications to your phone

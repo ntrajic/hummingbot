@@ -112,6 +112,59 @@ class AmmTriArbSol(StrategyV2Base):
             app.trading_core.add_notifier(self._telegram)
             self.log_with_clock(logging.INFO, "Telegram notifier started.")
 
+        if not self.config.dry_run:
+            asyncio.ensure_future(self._preflight_check())
+
+    async def _preflight_check(self):
+        """
+        Pre-flight safety checks before live trading begins.
+        Halts the strategy (sets _next_scan far in the future) if any check fails.
+        """
+        network = self.config.connector
+        try:
+            balances = await self._gateway.get_balances(
+                chain="solana", network="mainnet-beta",
+                address="",   # Gateway uses the defaultWallet from solana.yml
+                token_symbols=["USDC", "SOL"],
+            )
+            usdc = Decimal(str(balances.get("USDC", 0)))
+            sol = Decimal(str(balances.get("SOL", 0)))
+        except Exception as e:
+            self.log_with_clock(logging.ERROR, f"[PRE-FLIGHT] Balance check failed: {e}. Trading halted.")
+            self._next_scan = float("inf")
+            return
+
+        errors = []
+
+        # Guard 1: order_amount must not exceed 95% of available USDC
+        max_safe = usdc * Decimal("0.95")
+        if self.config.order_amount > max_safe:
+            errors.append(
+                f"order_amount ({self.config.order_amount} USDC) > 95% of balance ({max_safe:.4f} USDC). "
+                f"Reduce order_amount or add more USDC."
+            )
+
+        # Guard 2: must have at least 0.05 SOL for gas
+        min_sol = Decimal("0.05")
+        if sol < min_sol:
+            errors.append(
+                f"SOL balance ({sol:.4f}) < {min_sol} SOL minimum for gas. "
+                f"Send at least {min_sol} SOL to your BackpackWallet."
+            )
+
+        if errors:
+            for err in errors:
+                self.log_with_clock(logging.ERROR, f"[PRE-FLIGHT] ❌ {err}")
+            self.log_with_clock(logging.ERROR, "[PRE-FLIGHT] Trading halted. Fix the above and restart.")
+            self._next_scan = float("inf")
+            return
+
+        self.log_with_clock(
+            logging.INFO,
+            f"[PRE-FLIGHT] ✅ USDC={usdc:.4f}  SOL={sol:.4f}  "
+            f"order_amount={self.config.order_amount}  — all checks passed. LIVE trading active."
+        )
+
     def on_stop(self):
         if self._telegram:
             self._telegram.stop()
