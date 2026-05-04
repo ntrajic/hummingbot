@@ -43,3 +43,12 @@ scan_interval: 10
 # true  = log quotes only, no real orders placed (Phase 2A)
 # false = live execution via BackpackWallet (Phase 5)
 dry_run: true
+
+# Telegram alerts — profit-only notifications to your phone
+# Leave blank to disable. Reverts and skips are NOT sent (no noise).
+#
+# Setup:
+#   1. Message @BotFather on Telegram → /newbot → copy the token
+#   2. Message @userinfobot on Telegram → copy your chat_id
+telegram_token: ''
+telegram_chat_id: ''
