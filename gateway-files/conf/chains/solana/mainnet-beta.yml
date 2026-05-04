@@ -1,0 +1,27 @@
+chainID: 101
+nodeURL: https://api.mainnet-beta.solana.com
+nativeCurrencySymbol: SOL
+geckoId: solana
+swapProvider: jupiter/router
+
+# Default compute units for a transaction
+defaultComputeUnits: 200000
+
+# Confirmation polling interval in seconds
+confirmRetryInterval: 1
+
+# Number of confirmation polling attempts
+confirmRetryCount: 10
+
+# Minimum priority fee per compute unit in lamports
+# At $13 capital, 1.2% profit = ~$0.156. Medium fee keeps us net-positive.
+minPriorityFeePerCU: 0.1
+
+# Maximum priority fee per compute unit in lamports
+# Capped low to protect small capital — prevents fee from eating the profit
+maxPriorityFeePerCU: 0.5
+
+# Helius priority fee level for fee estimation
+# Medium (~$0.02-0.05 per tx) — safe for $13 capital at 1.2% min profit
+# Upgrade to High only after capital grows beyond $50
+priorityFeeLevel: Medium
