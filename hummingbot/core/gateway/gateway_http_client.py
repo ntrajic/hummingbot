@@ -946,6 +946,37 @@ class GatewayHttpClient:
             request_payload
         )
 
+    async def execute_tri_arb(
+        self,
+        network: str,
+        token_a: str,
+        token_b: str,
+        token_c: str,
+        amount: Decimal,
+        slippage_pct: Optional[Decimal] = None,
+        wallet_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Execute a triangular arbitrage A->B->C->A via the Jupiter router.
+        Unwind logic (sell back to A on leg 2/3 failure) runs server-side in Gateway.
+
+        :return: {status, leg1Sig, leg2Sig, leg3Sig, unwindSig, amountIn, amountOut, error}
+                 status: 1=success, -1=leg1 failed (nothing spent), -2=partial (unwind attempted)
+        """
+        api_network = self._parse_network(network)
+        payload: Dict[str, Any] = {
+            "network": api_network,
+            "tokenA": token_a,
+            "tokenB": token_b,
+            "tokenC": token_c,
+            "amount": float(amount),
+        }
+        if slippage_pct is not None:
+            payload["slippagePct"] = float(slippage_pct)
+        if wallet_address is not None:
+            payload["walletAddress"] = wallet_address
+        return await self.api_request("post", "connectors/jupiter/router/execute-tri-arb", payload)
+
     async def execute_quote(
         self,
         dex: str,

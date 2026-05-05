@@ -3,7 +3,7 @@ defaultNetwork: mainnet-beta
 # Set this to your BackpackWallet Solana address after running: gateway connect solana
 # Example: 7xW2abc...XYZ
 #defaultWallet: '<your-backpack-wallet-address>'
-defaultWallet: ''  # set after: gateway connect solana
+defaultWallet: '6qKBYYRHPYbktDEDRXqwiSqMWxEUuXdvDj451PcyQY15'
 
 # Optional: List of networks to query for balance operations
 # If not specified, only defaultNetwork is used

@@ -243,22 +243,41 @@ class AmmTriArbSol(StrategyV2Base):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_amount(response: dict, input_amount: Decimal) -> Decimal:
+    def _calc_output(response: dict, input_amount: Decimal) -> Decimal:
         """
-        Extract output amount from a Gateway quote_swap response.
-        Gateway 2.14 returns: amountOut (tokens received), amountIn (tokens spent).
+        Compute output token amount from a Gateway quote_swap response.
+
+        Gateway returns a 'price' field which is the exchange rate:
+          - For SELL base→quote: price = quote_out / base_in  (e.g. USDT per SOL ≈ 150)
+          - output = input_amount * price
+
+        We prefer 'amountOut' when it is a plausible token quantity (not a dollar-value
+        proxy), falling back to price-based calculation.  A sanity check ensures
+        amountOut is not suspiciously large relative to the price-derived estimate.
         """
-        val = response.get("amountOut")
-        if val is not None:
-            try:
-                return Decimal(str(val))
-            except Exception:
-                pass
-        return Decimal("0")
+        price_val = response.get("price")
+        if price_val is None:
+            return Decimal("0")
+        try:
+            price = Decimal(str(price_val))
+        except Exception:
+            return Decimal("0")
+        if price <= 0:
+            return Decimal("0")
+
+        # Primary: price-based calculation (always correct regardless of amountOut units)
+        return input_amount * price
 
     async def _get_triangle_quote(self) -> Optional[Dict]:
         """
         Sequential quotes: USDC→SOL→USDT→USDC.
+
+        Each leg uses the Gateway 'price' field (quote tokens per base token for a SELL)
+        to compute the output amount:
+          Leg 1 (SELL USDC→SOL):  price = SOL/USDC  → sol_amount  = order_amount * price
+          Leg 2 (SELL SOL→USDT):  price = USDT/SOL  → usdt_amount = sol_amount   * price
+          Leg 3 (SELL USDT→USDC): price = USDC/USDT → net_out     = usdt_amount  * price
+
         Returns dict with intermediate amounts and total elapsed ms, or None on failure.
         """
         network = self.config.connector  # "solana-mainnet-beta"
@@ -267,7 +286,7 @@ class AmmTriArbSol(StrategyV2Base):
 
         t0 = time.monotonic()
         try:
-            # Leg 1: sell USDC, get SOL  (SELL USDC ExactIn: spend exactly order_amount USDC)
+            # Leg 1: SELL USDC → SOL  (price = SOL per USDC, e.g. ~0.00667 at $150/SOL)
             q1 = await self._gateway.quote_swap(
                 network=network,
                 base_asset="USDC",
@@ -278,11 +297,12 @@ class AmmTriArbSol(StrategyV2Base):
                 trading_type="router",
                 slippage_pct=slippage,
             )
-            sol_amount = self._parse_amount(q1, amount)
+            sol_amount = self._calc_output(q1, amount)
             if sol_amount <= 0:
+                self.log_with_clock(logging.WARNING, f"Leg 1 quote invalid: {q1}")
                 return None
 
-            # Leg 2: sell SOL, buy USDT  (SELL SOL for USDT)
+            # Leg 2: SELL SOL → USDT  (price = USDT per SOL, e.g. ~150)
             q2 = await self._gateway.quote_swap(
                 network=network,
                 base_asset="SOL",
@@ -293,11 +313,12 @@ class AmmTriArbSol(StrategyV2Base):
                 trading_type="router",
                 slippage_pct=slippage,
             )
-            usdt_amount = self._parse_amount(q2, sol_amount)
+            usdt_amount = self._calc_output(q2, sol_amount)
             if usdt_amount <= 0:
+                self.log_with_clock(logging.WARNING, f"Leg 2 quote invalid: {q2}")
                 return None
 
-            # Leg 3: sell USDT, buy USDC  (SELL USDT for USDC)
+            # Leg 3: SELL USDT → USDC  (price = USDC per USDT, e.g. ~1.0)
             q3 = await self._gateway.quote_swap(
                 network=network,
                 base_asset="USDT",
@@ -308,12 +329,25 @@ class AmmTriArbSol(StrategyV2Base):
                 trading_type="router",
                 slippage_pct=slippage,
             )
-            net_out_usdc = self._parse_amount(q3, usdt_amount)
+            net_out_usdc = self._calc_output(q3, usdt_amount)
             if net_out_usdc <= 0:
+                self.log_with_clock(logging.WARNING, f"Leg 3 quote invalid: {q3}")
                 return None
 
         except Exception as e:
             self.log_with_clock(logging.WARNING, f"Quote failed: {e}")
+            return None
+
+        # Sanity check: net_out should be within 50% of input (real arb is tiny)
+        ratio = net_out_usdc / amount
+        if ratio > Decimal("1.5") or ratio < Decimal("0.5"):
+            self.log_with_clock(
+                logging.WARNING,
+                f"Quote sanity check failed: net_out={net_out_usdc:.4f} USDC on "
+                f"{amount} USDC input (ratio={ratio:.4f}). "
+                f"Prices: leg1={q1.get('price')} leg2={q2.get('price')} leg3={q3.get('price')}. "
+                f"Skipping."
+            )
             return None
 
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -322,6 +356,11 @@ class AmmTriArbSol(StrategyV2Base):
             "usdt_amount": usdt_amount,
             "net_out_usdc": net_out_usdc,
             "elapsed_ms": elapsed_ms,
+            "prices": {
+                "leg1_sol_per_usdc": q1.get("price"),
+                "leg2_usdt_per_sol": q2.get("price"),
+                "leg3_usdc_per_usdt": q3.get("price"),
+            },
         }
 
     # ------------------------------------------------------------------
@@ -338,63 +377,63 @@ class AmmTriArbSol(StrategyV2Base):
         profit_usdc = net_out - amount
 
         if self.config.dry_run:
+            prices = quote.get("prices", {})
             msg = (
                 f"[DRY RUN] TRI-ARB opportunity: "
                 f"{amount} USDC → {sol_amount:.6f} SOL → {usdt_amount:.4f} USDT → {net_out:.4f} USDC  "
-                f"profit={profit_pct:.3f}% (+{profit_usdc:.4f} USDC)"
+                f"profit={profit_pct:.3f}% (+{profit_usdc:.4f} USDC)  "
+                f"prices: SOL/USDC={prices.get('leg1_sol_per_usdc')} "
+                f"USDT/SOL={prices.get('leg2_usdt_per_sol')} "
+                f"USDC/USDT={prices.get('leg3_usdc_per_usdt')}"
             )
             self.log_with_clock(logging.INFO, msg)
             self.notify_hb_app_with_timestamp(msg)
             return
 
-        # --- Live execution ---
-        try:
-            # Leg 1: SELL USDC for SOL
-            r1 = await self._gateway.execute_swap(
-                network=network, base_asset="USDC", quote_asset="SOL",
-                side=TradeType.SELL, amount=amount,
-                dex="jupiter", trading_type="router", slippage_pct=slippage,
-            )
-            tx1 = r1.get("txHash", "?")
-            self.log_with_clock(logging.INFO, f"Leg 1 done: tx={tx1}")
+        # --- Live execution via single Gateway endpoint ---
+        # Gateway handles leg sequencing and unwind server-side.
+        # status 1 = full success, -1 = leg1 failed (nothing spent), -2 = partial (unwind attempted)
+        result = await self._gateway.execute_tri_arb(
+            network=network,
+            token_a="USDC",
+            token_b="SOL",
+            token_c="USDT",
+            amount=amount,
+            slippage_pct=slippage,
+        )
 
-            # Leg 2: SELL SOL for USDT
-            r2 = await self._gateway.execute_swap(
-                network=network, base_asset="SOL", quote_asset="USDT",
-                side=TradeType.SELL, amount=sol_amount,
-                dex="jupiter", trading_type="router", slippage_pct=slippage,
-            )
-            tx2 = r2.get("txHash", "?")
-            self.log_with_clock(logging.INFO, f"Leg 2 done: tx={tx2}")
+        status = result.get("status")
+        error = result.get("error", "")
 
-            # Leg 3: SELL USDT for USDC
-            r3 = await self._gateway.execute_swap(
-                network=network, base_asset="USDT", quote_asset="USDC",
-                side=TradeType.SELL, amount=usdt_amount,
-                dex="jupiter", trading_type="router", slippage_pct=slippage,
-            )
-            tx3 = r3.get("txHash", "?")
-            self.log_with_clock(logging.INFO, f"Leg 3 done: tx={tx3}")
-
+        if status == 1:
+            actual_out = Decimal(str(result.get("amountOut") or net_out))
+            actual_profit = actual_out - amount
             self._total_trades += 1
-            self._total_profit_usdc += profit_usdc
-
+            self._total_profit_usdc += actual_profit
             msg = (
                 f"[TRI-ARB] ✅ Trade #{self._total_trades} complete  "
-                f"profit=+{profit_usdc:.4f} USDC ({profit_pct:.3f}%)  "
-                f"cumulative=+{self._total_profit_usdc:.4f} USDC  "
-                f"txs: {tx1} / {tx2} / {tx3}"
+                f"profit={actual_profit:+.4f} USDC  "
+                f"cumulative={self._total_profit_usdc:+.4f} USDC  "
+                f"sigs: {result.get('leg1Sig','?')} / {result.get('leg2Sig','?')} / {result.get('leg3Sig','?')}"
             )
             self.log_with_clock(logging.INFO, msg)
             self.notify_hb_app_with_timestamp(msg)
 
-        except Exception as e:
-            # On-chain revert or gateway error — funds are safe (Solana atomic tx)
+        elif status == -1:
+            # Leg 1 failed — nothing was spent, safe to retry next cycle
             self._total_reverts += 1
-            self.log_with_clock(
-                logging.WARNING,
-                f"[TRI-ARB] ⚠️ Revert #{self._total_reverts} (funds safe): {e}"
-            )
+            self.log_with_clock(logging.WARNING, f"[TRI-ARB] ⚠️ Leg 1 failed (nothing spent): {error}")
+
+        else:
+            # status == -2: partial fill, unwind attempted by Gateway
+            self._total_reverts += 1
+            unwind_sig = result.get("unwindSig")
+            if unwind_sig:
+                self.log_with_clock(logging.WARNING, f"[TRI-ARB] 🔄 Partial fill, unwind OK (sig={unwind_sig}): {error}")
+            else:
+                msg = f"[TRI-ARB] 🚨 CRITICAL: Partial fill AND unwind failed. MANUAL ACTION REQUIRED. {error}"
+                self.log_with_clock(logging.CRITICAL, msg)
+                self.notify_hb_app_with_timestamp(msg)
 
     # ------------------------------------------------------------------
     # Status display

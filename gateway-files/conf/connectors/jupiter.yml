@@ -15,4 +15,4 @@ onlyDirectRoutes: false
 restrictIntermediateTokens: true
 
 # Jupiter API key — get from https://portal.jup.ag
-apiKey: ''  # get from https://portal.jup.ag
+apiKey: jup_48aa344f091055da562233ae3d7b3c19245a43c2eeea6723ad4d23462b21c05d
