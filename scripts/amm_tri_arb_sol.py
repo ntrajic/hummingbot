@@ -32,18 +32,24 @@ class AmmTriArbSolConfig(StrategyV2ConfigBase):
     controllers_config: list = []
 
     # Gateway network connector
-    connector: str = Field("solana-mainnet-beta")
+    connector: str = Field("solana-mainnet-beta", json_schema_extra={
+        "prompt": "Enter the Gateway connector (e.g. solana-mainnet-beta)", "prompt_on_new": True})
 
     # Triangle legs (base-quote pairs as Jupiter expects them)
-    pair_1: str = Field("SOL-USDC")   # leg 1: buy SOL with USDC
-    pair_2: str = Field("SOL-USDT")   # leg 2: sell SOL for USDT
-    pair_3: str = Field("USDT-USDC")  # leg 3: sell USDT for USDC
+    pair_1: str = Field("SOL-USDC", json_schema_extra={
+        "prompt": "Leg 1 trading pair — buy base with USDC (e.g. SOL-USDC)", "prompt_on_new": True})
+    pair_2: str = Field("SOL-USDT", json_schema_extra={
+        "prompt": "Leg 2 trading pair — sell base for USDT (e.g. SOL-USDT)", "prompt_on_new": True})
+    pair_3: str = Field("USDT-USDC", json_schema_extra={
+        "prompt": "Leg 3 trading pair — sell USDT back to USDC (e.g. USDT-USDC)", "prompt_on_new": True})
 
     # Capital: amount of USDC to deploy per cycle
-    order_amount: Decimal = Field(Decimal("13.0"))
+    order_amount: Decimal = Field(Decimal("13.0"), json_schema_extra={
+        "prompt": "Order amount in USDC per cycle", "prompt_on_new": True})
 
     # Minimum net profit required to fire the trade (1.2 = 1.2%)
-    min_profitability: Decimal = Field(Decimal("1.2"))
+    min_profitability: Decimal = Field(Decimal("1.2"), json_schema_extra={
+        "prompt": "Minimum profitability % to trigger a trade (e.g. 1.2)", "prompt_on_new": True})
 
     # Slippage tolerance passed to Jupiter (triggers on-chain revert if exceeded)
     slippage_pct: Decimal = Field(Decimal("0.5"))

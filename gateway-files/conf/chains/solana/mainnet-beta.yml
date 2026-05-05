@@ -1,6 +1,13 @@
 chainID: 101
 nodeURL: https://api.mainnet-beta.solana.com
 nativeCurrencySymbol: SOL
+# Wallet used by Gateway when routing swaps on solana-mainnet-beta
+#defaultWallet: "YOUR_BACKPACK_WALLET_PUBLIC_KEY"
+defaultWallet: ""  # set after: gateway connect solana
+
+# Quote TTL in ms — must be > max_quote_age_ms in the strategy (500ms)
+ttl: 10000
+
 geckoId: solana
 swapProvider: jupiter/router
 

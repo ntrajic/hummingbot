@@ -1,25 +1,18 @@
 # Slippage tolerance for swaps (percent)
-# Matches slippage_pct in amm_tri_arb_sol.yml — triggers on-chain revert if exceeded
 slippagePct: 0.5
 
 # Priority level for swap transaction processing
-# medium keeps fees ~$0.02-0.05 per tx, protecting $13 capital
 # Options: medium, high, veryHigh
 priorityLevel: 'medium'
 
 # Maximum priority fee in lamports
-# 200000 microlamports = ~$0.04 at current SOL price — safe floor for $13 capital
 maxLamports: 200000
 
-# Restrict routing to only go through 1 market
 # false = allow multi-hop routes (better prices for triangular arb)
 onlyDirectRoutes: false
 
 # Restrict routing through highly liquid intermediate tokens only
 restrictIntermediateTokens: true
 
-# Jupiter API key
-# Get your API key from https://portal.jup.ag
-# Without key: uses lite-api.jup.ag (deprecated Dec 31, 2025)
-# With key: uses api.jup.ag (free tier: 60 req/min)
-apiKey: ''
+# Jupiter API key — get from https://portal.jup.ag
+apiKey: ''  # get from https://portal.jup.ag
