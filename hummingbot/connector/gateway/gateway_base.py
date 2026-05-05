@@ -534,6 +534,15 @@ class GatewayBase(ConnectorBase):
         """
         if self._native_currency is None:
             await self.get_chain_info()
+        # Resolve wallet address: use configured address or fall back to Gateway default wallet
+        address = self._wallet_address
+        if not address:
+            address = await self._get_gateway_instance().get_default_wallet_for_chain(self.chain)
+            if address:
+                self._wallet_address = address
+            else:
+                self.logger().warning(f"No wallet address configured for {self.chain}. Cannot fetch balances.")
+                return
         local_asset_names = set(self._account_balances.keys())
         remote_asset_names = set()
         # Derive tokens from current trading pairs (not just init-time _tokens)
@@ -546,7 +555,7 @@ class GatewayBase(ConnectorBase):
         resp_json: Dict[str, Any] = await self._get_gateway_instance().get_balances(
             chain=self.chain,
             network=self.network,
-            address=self.address,
+            address=address,
             token_symbols=token_list
         )
         for token, bal in resp_json["balances"].items():
