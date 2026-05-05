@@ -48,7 +48,7 @@ class AmmTriArbSolConfig(StrategyV2ConfigBase):
         "prompt": "Order amount in USDC per cycle", "prompt_on_new": True})
 
     # Minimum net profit required to fire the trade (1.2 = 1.2%)
-    min_profitability: Decimal = Field(Decimal("1.2"), json_schema_extra={
+    min_profitability: Decimal = Field(Decimal("0.1"), json_schema_extra={
         "prompt": "Minimum profitability % to trigger a trade (e.g. 1.2)", "prompt_on_new": True})
 
     # Slippage tolerance passed to Jupiter (triggers on-chain revert if exceeded)
