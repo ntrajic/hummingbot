@@ -246,21 +246,12 @@ class AmmTriArbSol(StrategyV2Base):
     def _parse_amount(response: dict, input_amount: Decimal) -> Decimal:
         """
         Extract output amount from a Gateway quote_swap response.
-        Tries keys in order: expectedAmount, amount, then price * input_amount.
-        Returns Decimal("0") if nothing usable is found.
+        Gateway 2.14 returns: amountOut (tokens received), amountIn (tokens spent).
         """
-        for key in ("expectedAmount", "amount"):
-            val = response.get(key)
-            if val is not None:
-                try:
-                    return Decimal(str(val))
-                except Exception:
-                    pass
-        # Fallback: price field × input amount (some Gateway versions return this)
-        price = response.get("price")
-        if price is not None:
+        val = response.get("amountOut")
+        if val is not None:
             try:
-                return Decimal(str(price)) * input_amount
+                return Decimal(str(val))
             except Exception:
                 pass
         return Decimal("0")
@@ -276,13 +267,13 @@ class AmmTriArbSol(StrategyV2Base):
 
         t0 = time.monotonic()
         try:
-            # Leg 1: sell USDC, buy SOL  (BUY SOL with USDC)
+            # Leg 1: sell USDC, get SOL  (SELL USDC ExactIn: spend exactly order_amount USDC)
             q1 = await self._gateway.quote_swap(
                 network=network,
-                base_asset="SOL",
-                quote_asset="USDC",
+                base_asset="USDC",
+                quote_asset="SOL",
                 amount=amount,
-                side=TradeType.BUY,
+                side=TradeType.SELL,
                 dex="jupiter",
                 trading_type="router",
                 slippage_pct=slippage,
@@ -358,10 +349,10 @@ class AmmTriArbSol(StrategyV2Base):
 
         # --- Live execution ---
         try:
-            # Leg 1: BUY SOL with USDC
+            # Leg 1: SELL USDC for SOL
             r1 = await self._gateway.execute_swap(
-                network=network, base_asset="SOL", quote_asset="USDC",
-                side=TradeType.BUY, amount=amount,
+                network=network, base_asset="USDC", quote_asset="SOL",
+                side=TradeType.SELL, amount=amount,
                 dex="jupiter", trading_type="router", slippage_pct=slippage,
             )
             tx1 = r1.get("txHash", "?")
