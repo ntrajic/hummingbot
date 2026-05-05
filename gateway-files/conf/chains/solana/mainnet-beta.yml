@@ -1,5 +1,5 @@
 chainID: 101
-nodeURL: https://rpc.ankr.com/solana
+nodeURL: https://api.mainnet-beta.solana.com
 nativeCurrencySymbol: SOL
 # Wallet used by Gateway when routing swaps on solana-mainnet-beta
 #defaultWallet: "YOUR_BACKPACK_WALLET_PUBLIC_KEY"
