@@ -532,6 +532,8 @@ class GatewayBase(ConnectorBase):
         """
         Calls Gateway API to update total and available balances.
         """
+        if self._chain is None:
+            return
         if self._native_currency is None:
             await self.get_chain_info()
         # Resolve wallet address: use configured address or fall back to Gateway default wallet
