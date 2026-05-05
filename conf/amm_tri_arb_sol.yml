@@ -25,8 +25,8 @@ pair_3: USDT-USDC   # leg 3: sell USDT for USDC
 order_amount: 13.0
 
 # Minimum round-trip profit required to fire the trade (percent)
-# At $13 capital: 1.2% = ~$0.156 — covers medium priority fee (~$0.02-0.05)
-min_profitability: 1.2
+# At $13 capital: 0.1% = ~$0.013 — covers Solana tx fee + Jupiter fee with 2x safety margin
+min_profitability: 0.1
 
 # Slippage tolerance passed to Jupiter (percent)
 # If the on-chain price moves beyond this, the Solana tx reverts automatically
