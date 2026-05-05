@@ -52,7 +52,7 @@ class AmmTriArbSolConfig(StrategyV2ConfigBase):
         "prompt": "Minimum profitability % to trigger a trade (e.g. 1.2)", "prompt_on_new": True})
 
     # Slippage tolerance passed to Jupiter (triggers on-chain revert if exceeded)
-    slippage_pct: Decimal = Field(Decimal("0.5"))
+    slippage_pct: Decimal = Field(Decimal("0.05"))
 
     # Abort if total quote round-trip takes longer than this (ms)
     max_quote_age_ms: int = Field(500)
@@ -171,7 +171,7 @@ class AmmTriArbSol(StrategyV2Base):
             f"order_amount={self.config.order_amount}  — all checks passed. LIVE trading active."
         )
 
-    def on_stop(self):
+    async def on_stop(self):
         if self._telegram:
             self._telegram.stop()
             self._telegram = None
