@@ -4,7 +4,7 @@
 # Helius - Solana RPC provider
 # Get your API key from https://helius.dev
 # Enables WebSocket transaction monitoring and optimized RPC
-helius: ''
+helius: '9d77c7d0-64a3-4fda-9f33-40c693cb909c'
 
 # Infura - Ethereum/EVM RPC provider
 # Get your API key from https://infura.io

@@ -11,4 +11,4 @@ defaultNetworks:
   - mainnet-beta
 
 # RPC provider: 'url' uses nodeURL from network config, or specify a provider name (e.g., 'helius')
-rpcProvider: url
+rpcProvider: helius
