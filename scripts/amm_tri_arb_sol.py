@@ -387,7 +387,8 @@ class AmmTriArbSol(StrategyV2Base):
                 f"USDC/USDT={prices.get('leg3_usdc_per_usdt')}"
             )
             self.log_with_clock(logging.INFO, msg)
-            self.notify_hb_app_with_timestamp(msg)
+            if self._telegram:
+                self._telegram.add_message_to_queue(msg)
             return
 
         # --- Live execution via single Gateway endpoint ---
@@ -417,7 +418,8 @@ class AmmTriArbSol(StrategyV2Base):
                 f"sigs: {result.get('leg1Sig','?')} / {result.get('leg2Sig','?')} / {result.get('leg3Sig','?')}"
             )
             self.log_with_clock(logging.INFO, msg)
-            self.notify_hb_app_with_timestamp(msg)
+            if self._telegram:
+                self._telegram.add_message_to_queue(msg)
 
         elif status == -1:
             # Leg 1 failed — nothing was spent, safe to retry next cycle
@@ -433,7 +435,8 @@ class AmmTriArbSol(StrategyV2Base):
             else:
                 msg = f"[TRI-ARB] 🚨 CRITICAL: Partial fill AND unwind failed. MANUAL ACTION REQUIRED. {error}"
                 self.log_with_clock(logging.CRITICAL, msg)
-                self.notify_hb_app_with_timestamp(msg)
+                if self._telegram:
+                    self._telegram.add_message_to_queue(msg)
 
     # ------------------------------------------------------------------
     # Status display
