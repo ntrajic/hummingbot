@@ -104,13 +104,12 @@ class AmmTriArbSol(StrategyV2Base):
         self.config = config
         self._gateway = GatewayHttpClient.get_instance()
         self._telegram: Optional[TelegramNotifier] = None
+        self._telegram_started: bool = False
         if config.telegram_token and config.telegram_chat_id:
             self._telegram = TelegramNotifier(
                 token=config.telegram_token,
                 chat_id=config.telegram_chat_id,
             )
-            self._telegram.start()
-            self.log_with_clock(logging.INFO, "Telegram notifier started.")
 
     async def on_start(self):
         if not self.config.dry_run:
@@ -176,6 +175,10 @@ class AmmTriArbSol(StrategyV2Base):
     # ------------------------------------------------------------------
 
     def on_tick(self):
+        if not self._telegram_started and self._telegram:
+            self._telegram.start()
+            self._telegram_started = True
+            self.log_with_clock(logging.INFO, "Telegram notifier started.")
         if self.current_timestamp < self._next_scan or self._scanning:
             return
         self._next_scan = self.current_timestamp + self.config.scan_interval
