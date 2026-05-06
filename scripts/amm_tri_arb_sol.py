@@ -106,7 +106,7 @@ class AmmTriArbSol(StrategyV2Base):
         self._gateway = GatewayHttpClient.get_instance()
         self._telegram: Optional[TelegramNotifier] = None
 
-    def on_start(self):
+    async def on_start(self):
         if self.config.telegram_token and self.config.telegram_chat_id:
             self._telegram = TelegramNotifier(
                 token=self.config.telegram_token,
