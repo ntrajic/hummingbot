@@ -19,7 +19,6 @@ from typing import Dict, Optional
 
 from pydantic import Field
 
-from hummingbot.client.hummingbot_application import HummingbotApplication
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.data_type.common import MarketDict, TradeType
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
@@ -105,19 +104,15 @@ class AmmTriArbSol(StrategyV2Base):
         self.config = config
         self._gateway = GatewayHttpClient.get_instance()
         self._telegram: Optional[TelegramNotifier] = None
-
-    async def on_start(self):
-        if self.config.telegram_token and self.config.telegram_chat_id:
+        if config.telegram_token and config.telegram_chat_id:
             self._telegram = TelegramNotifier(
-                token=self.config.telegram_token,
-                chat_id=self.config.telegram_chat_id,
+                token=config.telegram_token,
+                chat_id=config.telegram_chat_id,
             )
             self._telegram.start()
-            # Register with the app so notify_hb_app_with_timestamp() routes to Telegram
-            app = HummingbotApplication.main_application()
-            app.trading_core.add_notifier(self._telegram)
             self.log_with_clock(logging.INFO, "Telegram notifier started.")
 
+    async def on_start(self):
         if not self.config.dry_run:
             asyncio.ensure_future(self._preflight_check())
 
