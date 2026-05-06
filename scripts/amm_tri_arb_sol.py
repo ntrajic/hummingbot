@@ -22,7 +22,6 @@ from pydantic import Field
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.data_type.common import MarketDict, TradeType
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
-from hummingbot.notifier.telegram_notifier import TelegramNotifier
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2ConfigBase
 
 
@@ -103,13 +102,26 @@ class AmmTriArbSol(StrategyV2Base):
         super().__init__(connectors, config)
         self.config = config
         self._gateway = GatewayHttpClient.get_instance()
-        self._telegram: Optional[TelegramNotifier] = None
-        self._telegram_started: bool = False
-        if config.telegram_token and config.telegram_chat_id:
-            self._telegram = TelegramNotifier(
-                token=config.telegram_token,
-                chat_id=config.telegram_chat_id,
-            )
+        self._tg_token: str = config.telegram_token
+        self._tg_chat_id: str = config.telegram_chat_id
+
+    def _tg_send(self, msg: str):
+        """Fire-and-forget Telegram send — bypasses NotifierBase queue entirely."""
+        if not (self._tg_token and self._tg_chat_id):
+            return
+        asyncio.ensure_future(self._tg_send_async(msg))
+
+    async def _tg_send_async(self, msg: str):
+        import aiohttp
+        url = f"https://api.telegram.org/bot{self._tg_token}/sendMessage"
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(url, json={"chat_id": self._tg_chat_id, "text": msg},
+                                  timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    if r.status != 200:
+                        self.log_with_clock(logging.WARNING, f"Telegram send failed [{r.status}]: {await r.text()}")
+        except Exception as e:
+            self.log_with_clock(logging.WARNING, f"Telegram send error: {e}")
 
     async def on_start(self):
         if not self.config.dry_run:
@@ -166,19 +178,13 @@ class AmmTriArbSol(StrategyV2Base):
         )
 
     async def on_stop(self):
-        if self._telegram:
-            self._telegram.stop()
-            self._telegram = None
+        pass
 
     # ------------------------------------------------------------------
     # Tick entry point
     # ------------------------------------------------------------------
 
     def on_tick(self):
-        if not self._telegram_started and self._telegram:
-            self._telegram.start()
-            self._telegram_started = True
-            self.log_with_clock(logging.INFO, "Telegram notifier started.")
         if self.current_timestamp < self._next_scan or self._scanning:
             return
         self._next_scan = self.current_timestamp + self.config.scan_interval
@@ -385,8 +391,7 @@ class AmmTriArbSol(StrategyV2Base):
                 f"USDC/USDT={prices.get('leg3_usdc_per_usdt')}"
             )
             self.log_with_clock(logging.INFO, msg)
-            if self._telegram:
-                self._telegram.add_message_to_queue(msg)
+            self._tg_send(msg)
             return
 
         # --- Live execution via single Gateway endpoint ---
@@ -416,8 +421,7 @@ class AmmTriArbSol(StrategyV2Base):
                 f"sigs: {result.get('leg1Sig','?')} / {result.get('leg2Sig','?')} / {result.get('leg3Sig','?')}"
             )
             self.log_with_clock(logging.INFO, msg)
-            if self._telegram:
-                self._telegram.add_message_to_queue(msg)
+            self._tg_send(msg)
 
         elif status == -1:
             # Leg 1 failed — nothing was spent, safe to retry next cycle
@@ -433,8 +437,7 @@ class AmmTriArbSol(StrategyV2Base):
             else:
                 msg = f"[TRI-ARB] 🚨 CRITICAL: Partial fill AND unwind failed. MANUAL ACTION REQUIRED. {error}"
                 self.log_with_clock(logging.CRITICAL, msg)
-                if self._telegram:
-                    self._telegram.add_message_to_queue(msg)
+                self._tg_send(msg)
 
     # ------------------------------------------------------------------
     # Status display
