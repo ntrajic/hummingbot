@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, Optional
 
@@ -384,8 +385,9 @@ class AmmTriArbSol(StrategyV2Base):
 
         if self.config.dry_run:
             prices = quote.get("prices", {})
+            ts = datetime.fromtimestamp(self.current_timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             msg = (
-                f"[DRY RUN] TRI-ARB opportunity: "
+                f"[DRY RUN] TRI-ARB opportunity @ {ts}  "
                 f"{amount} USDC → {sol_amount:.6f} SOL → {usdt_amount:.4f} USDT → {net_out:.4f} USDC  "
                 f"profit={profit_pct:.3f}% (+{profit_usdc:.4f} USDC)  "
                 f"prices: SOL/USDC={prices.get('leg1_sol_per_usdc')} "
@@ -416,8 +418,9 @@ class AmmTriArbSol(StrategyV2Base):
             actual_profit = actual_out - amount
             self._total_trades += 1
             self._total_profit_usdc += actual_profit
+            ts = datetime.fromtimestamp(self.current_timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             msg = (
-                f"[TRI-ARB] ✅ Trade #{self._total_trades} complete  "
+                f"[TRI-ARB] ✅ Trade #{self._total_trades} @ {ts}  "
                 f"profit={actual_profit:+.4f} USDC  "
                 f"cumulative={self._total_profit_usdc:+.4f} USDC  "
                 f"sigs: {result.get('leg1Sig','?')} / {result.get('leg2Sig','?')} / {result.get('leg3Sig','?')}"
