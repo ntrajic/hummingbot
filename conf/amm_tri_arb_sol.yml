@@ -13,7 +13,8 @@
 script_file_name: amm_tri_arb_sol.py
 
 # Gateway network connector (chain-network format)
-connector: solana-mainnet-beta
+connector: jupiter_solana
+use_jupiter_routing: true
 
 # Triangle legs
 pair_1: SOL-USDC    # leg 1: buy SOL with USDC
@@ -22,22 +23,22 @@ pair_3: USDT-USDC   # leg 3: sell USDT for USDC
 
 # USDC capital to deploy per cycle
 # Set slightly below your actual balance to leave a dust buffer for fees
-order_amount: 13.0
+order_amount: 17.0
 
 # Minimum round-trip profit required to fire the trade (percent)
 # At $13 capital: 0.1% = ~$0.013 — covers Solana tx fee + Jupiter fee with 2x safety margin
-min_profitability: 0.1
+min_profitability: 1.2
 
 # Slippage tolerance passed to Jupiter (percent)
 # If the on-chain price moves beyond this, the Solana tx reverts automatically
-slippage_pct: 0.5
+slippage_pct: 1.2
 
 # Abort execution if total quote round-trip exceeds this (milliseconds)
 # Prevents firing on stale quotes during volatile markets
-max_quote_age_ms: 500
+max_quote_age_ms: 1500
 
 # Seconds between scan cycles
-scan_interval: 10
+scan_interval: 60
 
 # Paper trade mode
 # true  = log quotes only, no real orders placed (Phase 2A / testing)

@@ -31,8 +31,10 @@ class AmmTriArbSolConfig(StrategyV2ConfigBase):
     controllers_config: list = []
 
     # Gateway network connector
-    connector: str = Field("solana-mainnet-beta", json_schema_extra={
-        "prompt": "Enter the Gateway connector (e.g. solana-mainnet-beta)", "prompt_on_new": True})
+    connector: str = Field("jupiter_solana", json_schema_extra={
+        "prompt": "Enter the Gateway connector (e.g. jupiter_solana)", "prompt_on_new": True})
+
+    use_jupiter_routing: bool = Field(True)
 
     # Triangle legs (base-quote pairs as Jupiter expects them)
     pair_1: str = Field("SOL-USDC", json_schema_extra={
@@ -47,17 +49,17 @@ class AmmTriArbSolConfig(StrategyV2ConfigBase):
         "prompt": "Order amount in USDC per cycle", "prompt_on_new": True})
 
     # Minimum net profit required to fire the trade (1.2 = 1.2%)
-    min_profitability: Decimal = Field(Decimal("0.01"), json_schema_extra={
+    min_profitability: Decimal = Field(Decimal("1.2"), json_schema_extra={
         "prompt": "Minimum profitability % to trigger a trade (e.g. 1.2)", "prompt_on_new": True})
 
     # Slippage tolerance passed to Jupiter (triggers on-chain revert if exceeded)
-    slippage_pct: Decimal = Field(Decimal("0.05"))
+    slippage_pct: Decimal = Field(Decimal("1.2"))
 
     # Abort if total quote round-trip takes longer than this (ms)
-    max_quote_age_ms: int = Field(500)
+    max_quote_age_ms: int = Field(1500)
 
     # Seconds between each scan cycle
-    scan_interval: int = Field(10)
+    scan_interval: int = Field(60)
 
     # Paper trade mode: True = quotes only, no execution
     dry_run: bool = Field(True)
@@ -277,21 +279,54 @@ class AmmTriArbSol(StrategyV2Base):
 
     async def _get_triangle_quote(self) -> Optional[Dict]:
         """
-        Sequential quotes: USDC→SOL→USDT→USDC.
-
-        Each leg uses the Gateway 'price' field (quote tokens per base token for a SELL)
-        to compute the output amount:
-          Leg 1 (SELL USDC→SOL):  price = SOL/USDC  → sol_amount  = order_amount * price
-          Leg 2 (SELL SOL→USDT):  price = USDT/SOL  → usdt_amount = sol_amount   * price
-          Leg 3 (SELL USDT→USDC): price = USDC/USDT → net_out     = usdt_amount  * price
-
-        Returns dict with intermediate amounts and total elapsed ms, or None on failure.
+        Quotes the triangle: USDC→SOL→USDT→USDC.
+        If use_jupiter_routing is enabled, performs a single atomic route quote.
+        Otherwise, falls back to sequential quotes.
         """
-        network = self.config.connector  # "solana-mainnet-beta"
+        network = self.config.connector  # "jupiter_solana"
         slippage = self.config.slippage_pct
         amount = self.config.order_amount
+        path = ["USDC", "SOL", "USDT", "USDC"]
 
         t0 = time.monotonic()
+
+        if self.config.use_jupiter_routing:
+            try:
+                # Atomic quote via Gateway Router price endpoint
+                # This fetches a single Route covering all 3 legs
+                quote_params = {
+                    "connector": "jupiter",
+                    "chain": "solana",
+                    "network": "mainnet-beta",
+                    "token_path": path,
+                    "amount": str(amount),
+                    "slippage_pct": str(slippage)
+                }
+                
+                res = await self._gateway.call_endpoint(
+                    method="POST",
+                    url="connectors/jupiter/router/price",
+                    data=quote_params
+                )
+                
+                net_out_usdc = Decimal(str(res.get("amountOut", "0")))
+                if net_out_usdc <= 0:
+                    return None
+                    
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                return {
+                    "sol_amount": Decimal("0"), # intermediate amounts not provided in atomic quote
+                    "usdt_amount": Decimal("0"),
+                    "net_out_usdc": net_out_usdc,
+                    "elapsed_ms": elapsed_ms,
+                    "prices": {
+                        "atomic_route": "true"
+                    },
+                }
+            except Exception as e:
+                self.log_with_clock(logging.WARNING, f"Atomic quote failed: {e}. Falling back to sequential.")
+
+        # --- Sequential fallback ---
         try:
             # Leg 1: SELL USDC → SOL  (price = SOL per USDC, e.g. ~0.00667 at $150/SOL)
             q1 = await self._gateway.quote_swap(
@@ -370,6 +405,45 @@ class AmmTriArbSol(StrategyV2Base):
             },
         }
 
+    async def execute_atomic_triangle(self, path: list, amount: Decimal):
+        """
+        Executes a multi-leg triangle swap atomically via Jupiter Router.
+        path: ["USDC", "SOL", "USDT", "USDC"]
+        """
+        try:
+            # 1. Build the multi-hop routing request
+            # This tells Gateway to find a single route covering all 3 legs
+            order_params = {
+                "connector": "jupiter",
+                "chain": "solana",
+                "network": "mainnet-beta",
+                "token_path": path,
+                "amount": str(amount),
+                "slippage_pct": str(self.config.slippage_pct),
+                "wait_for_confirmation": True
+            }
+
+            self.log_with_clock(logging.INFO, f"Initiating Atomic Triangle: {' -> '.join(path)}")
+
+            # 2. Call the Gateway Router Execute endpoint
+            # This is the "Magic Hook" that forces atomicity
+            result = await self._gateway.call_endpoint(
+                method="POST",
+                url="connectors/jupiter/router/execute-swap",
+                data=order_params
+            )
+
+            if result.get("network_transaction_hash"):
+                self.log_with_clock(logging.INFO, f"Atomic Swap Success! Hash: {result['network_transaction_hash']}")
+                return result
+            else:
+                self.log_with_clock(logging.ERROR, f"Atomic Swap Failed: {result.get('message', 'Unknown Error')}")
+                return result
+
+        except Exception as e:
+            self.log_with_clock(logging.ERROR, f"Critical failure in atomic execution: {str(e)}")
+            return {"error": str(e)}
+
     # ------------------------------------------------------------------
     # Execute (or dry-run)
     # ------------------------------------------------------------------
@@ -386,19 +460,54 @@ class AmmTriArbSol(StrategyV2Base):
         if self.config.dry_run:
             prices = quote.get("prices", {})
             ts = datetime.fromtimestamp(self.current_timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            msg = (
-                f"[DRY RUN] TRI-ARB opportunity @ {ts}  "
-                f"{amount} USDC → {sol_amount:.6f} SOL → {usdt_amount:.4f} USDT → {net_out:.4f} USDC  "
-                f"profit={profit_pct:.3f}% (+{profit_usdc:.4f} USDC)  "
-                f"prices: SOL/USDC={prices.get('leg1_sol_per_usdc')} "
-                f"USDT/SOL={prices.get('leg2_usdt_per_sol')} "
-                f"USDC/USDT={prices.get('leg3_usdc_per_usdt')}"
-            )
+            
+            if self.config.use_jupiter_routing and prices.get("atomic_route"):
+                msg = (
+                    f"[DRY RUN] ATOMIC TRI-ARB opportunity @ {ts}  "
+                    f"{amount} USDC → [ATOMIC ROUTE] → {net_out:.4f} USDC  "
+                    f"profit={profit_pct:.3f}% (+{profit_usdc:.4f} USDC)"
+                )
+            else:
+                msg = (
+                    f"[DRY RUN] TRI-ARB opportunity @ {ts}  "
+                    f"{amount} USDC → {sol_amount:.6f} SOL → {usdt_amount:.4f} USDT → {net_out:.4f} USDC  "
+                    f"profit={profit_pct:.3f}% (+{profit_usdc:.4f} USDC)  "
+                    f"prices: SOL/USDC={prices.get('leg1_sol_per_usdc')} "
+                    f"USDT/SOL={prices.get('leg2_usdt_per_sol')} "
+                    f"USDC/USDT={prices.get('leg3_usdc_per_usdt')}"
+                )
             self.log_with_clock(logging.INFO, msg)
             self._tg_send(msg)
             return
 
-        # --- Live execution via single Gateway endpoint ---
+        # --- Atomic execution via Jupiter Router ---
+        if self.config.use_jupiter_routing:
+            result = await self.execute_atomic_triangle(
+                path=["USDC", "SOL", "USDT", "USDC"],
+                amount=amount
+            )
+            
+            tx_hash = result.get("network_transaction_hash")
+            if tx_hash:
+                actual_out = Decimal(str(result.get("amountOut") or net_out))
+                actual_profit = actual_out - amount
+                self._total_trades += 1
+                self._total_profit_usdc += actual_profit
+                ts = datetime.fromtimestamp(self.current_timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                msg = (
+                    f"[TRI-ARB] ✅ Atomic Trade #{self._total_trades} @ {ts}  "
+                    f"profit={actual_profit:+.4f} USDC  "
+                    f"cumulative={self._total_profit_usdc:+.4f} USDC  "
+                    f"hash: {tx_hash}"
+                )
+                self.log_with_clock(logging.INFO, msg)
+                self._tg_send(msg)
+            else:
+                self._total_reverts += 1
+                self.log_with_clock(logging.WARNING, f"[TRI-ARB] ⚠️ Atomic Swap failed: {result.get('message', 'Check logs')}")
+            return
+
+        # --- Legacy sequential execution via Gateway endpoint ---
         # Gateway handles leg sequencing and unwind server-side.
         # status 1 = full success, -1 = leg1 failed (nothing spent), -2 = partial (unwind attempted)
         result = await self._gateway.execute_tri_arb(

@@ -3,3 +3,11 @@ defaultWallet: 6qKBYYRHPYbktDEDRXqwiSqMWxEUuXdvDj451PcyQY15
 defaultNetworks:
   - mainnet-beta
 rpcProvider: helius
+
+# Ensure the jupiter section is configured for routing
+jupiter:
+  enabled: true
+  routerApiUrl: "https://quote-api.jup.ag/v6" # Use the V6 Router
+  # Critical: Increase timeout to allow for complex atomic routes
+  transactionTimeout: 20000
+
