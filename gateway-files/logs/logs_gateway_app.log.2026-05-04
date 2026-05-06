@@ -1,0 +1,18 @@
+2026-05-04 09:38:15 | info | 	⚡️ Gateway version 2.14.0 starting at http://localhost:15888
+2026-05-04 09:38:15 | info | 	🔧 Log level configured as: info
+2026-05-04 09:38:15 | info | 	Checking for processes using port 15888...
+2026-05-04 09:38:15 | info | 	No process found using port 15888
+2026-05-04 09:38:15 | info | 	🔴 Running in development mode with (unsafe!) HTTP endpoints
+2026-05-04 09:38:16 | info | 	📓 Documentation available at http://localhost:15888/docs
+2026-05-04 09:38:16 | info | 	🌐 Chain Configurations:
+2026-05-04 09:38:17 | info | 	📡 Solana (defaultNetwork: mainnet-beta): Block #417,578,845 - https://api.mainnet-beta.solana.com
+2026-05-04 09:38:17 | info | 	📡 Ethereum (defaultNetwork: mainnet): Unable to fetch block number - https://eth.llamarpc.com
+2026-05-04 12:48:05 | info | 	⚡️ Gateway version 2.14.0 starting at http://localhost:15888
+2026-05-04 12:48:05 | info | 	🔧 Log level configured as: info
+2026-05-04 12:48:05 | info | 	Checking for processes using port 15888...
+2026-05-04 12:48:05 | info | 	No process found using port 15888
+2026-05-04 12:48:05 | info | 	🔴 Running in development mode with (unsafe!) HTTP endpoints
+2026-05-04 12:48:08 | info | 	📓 Documentation available at http://localhost:15888/docs
+2026-05-04 12:48:08 | info | 	🌐 Chain Configurations:
+2026-05-04 12:48:09 | info | 	📡 Solana (defaultNetwork: mainnet-beta): Block #417,607,447 - https://api.mainnet-beta.solana.com
+2026-05-04 12:48:09 | info | 	📡 Ethereum (defaultNetwork: mainnet): Unable to fetch block number - https://eth.llamarpc.com

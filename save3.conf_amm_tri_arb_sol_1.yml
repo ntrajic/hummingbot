@@ -1,0 +1,14 @@
+script_file_name: amm_tri_arb_sol.py
+controllers_config: []
+connector: solana-mainnet-beta
+pair_1: SOL-USDC
+pair_2: SOL-USDT
+pair_3: USDT-USDC
+order_amount: '12.5'
+min_profitability: '0.008'
+slippage_pct: '0.05'
+max_quote_age_ms: 500
+scan_interval: 30
+dry_run: false
+telegram_token: '8104177532:AAHbL0s96xl44_L0i83ZIo1XOO70g6yejuc'
+telegram_chat_id: '8735361891'

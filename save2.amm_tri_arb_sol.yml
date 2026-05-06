@@ -1,0 +1,32 @@
+script_file_name: amm_tri_arb_sol.py
+controllers_config: []
+
+# Gateway network connector
+connector: solana-mainnet-beta
+
+# Triangle legs
+pair_1: SOL-USDC
+pair_2: SOL-USDT
+pair_3: USDT-USDC
+
+# Capital per cycle (USDC)
+order_amount: 17.0
+
+# Minimum net profit % to trigger a trade
+min_profitability: 1.2
+
+# Slippage tolerance passed to Jupiter
+slippage_pct: 0.05
+
+# Abort if total quote round-trip takes longer than this (ms)
+max_quote_age_ms: 1500
+
+# Seconds between each scan cycle
+scan_interval: 60
+
+# Paper trade mode: set to false for live trading
+dry_run: true
+
+# Telegram alerts — token from @BotFather, chat_id from @userinfobot
+telegram_token: ''   # set via @BotFather
+telegram_chat_id: '' # set via @userinfobot
