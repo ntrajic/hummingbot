@@ -107,7 +107,9 @@ class AmmTriArbSol(StrategyV2Base):
 
     def _tg_send(self, msg: str):
         """Fire-and-forget Telegram send — bypasses NotifierBase queue entirely."""
+        self.log_with_clock(logging.INFO, f"[TG DEBUG] token={repr(self._tg_token[:10] if self._tg_token else '')} chat={repr(self._tg_chat_id)}")
         if not (self._tg_token and self._tg_chat_id):
+            self.log_with_clock(logging.WARNING, "[TG DEBUG] token or chat_id empty — skipping send")
             return
         asyncio.ensure_future(self._tg_send_async(msg))
 
