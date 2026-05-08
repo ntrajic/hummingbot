@@ -1,14 +1,12 @@
 """
 AMM Triangular Arbitrage on Solana via Jupiter DEX
-Branch: amm_tri_arb_sol
-
-Triangle route: USDC → SOL → USDT → USDC
-All three legs execute as a single atomic Solana transaction via Jupiter router.
-If the round-trip is unprofitable, the chain reverts — no USDC leaves the wallet.
+Triangle route: USDC -> SOL -> USDT -> USDC
+All three legs execute as a single atomic Solana transaction via Jupiter router (using execute-tri-arb).
+If the round-trip is unprofitable, the chain reverts - no USDC leaves the wallet.
 
 Modes:
-  dry_run: True  → paper trading (quotes only, no execution)
-  dry_run: False → live trading (real BackpackWallet via Gateway)
+  dry_run: True  -> paper trading (quotes only, no execution)
+  dry_run: False -> live trading (real BackpackWallet via Gateway)
 """
 import asyncio
 import logging
@@ -16,9 +14,9 @@ import os
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.data_type.common import MarketDict, TradeType
@@ -27,22 +25,28 @@ from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2Confi
 
 
 class AmmTriArbSolConfig(StrategyV2ConfigBase):
+    model_config = ConfigDict(extra='allow')
     script_file_name: str = os.path.basename(__file__)
     controllers_config: list = []
 
-    # Gateway network connector
-    connector: str = Field("jupiter_solana", json_schema_extra={
-        "prompt": "Enter the Gateway connector (e.g. jupiter_solana)", "prompt_on_new": True})
+    # Gateway network configuration
+    connector: str = Field("jupiter", json_schema_extra={
+        "prompt": "Enter the Gateway connector (e.g. jupiter)", "prompt_on_new": True})
+    chain: str = Field("solana", json_schema_extra={
+        "prompt": "Enter the chain (e.g. solana)", "prompt_on_new": True})
+    network: str = Field("mainnet-beta", json_schema_extra={
+        "prompt": "Enter the network (e.g. mainnet-beta)", "prompt_on_new": True})
 
     use_jupiter_routing: bool = Field(True)
+    allow_sequential_fallback: bool = Field(True)
 
-    # Triangle legs (base-quote pairs as Jupiter expects them)
-    pair_1: str = Field("SOL-USDC", json_schema_extra={
-        "prompt": "Leg 1 trading pair — buy base with USDC (e.g. SOL-USDC)", "prompt_on_new": True})
-    pair_2: str = Field("SOL-USDT", json_schema_extra={
-        "prompt": "Leg 2 trading pair — sell base for USDT (e.g. SOL-USDT)", "prompt_on_new": True})
-    pair_3: str = Field("USDT-USDC", json_schema_extra={
-        "prompt": "Leg 3 trading pair — sell USDT back to USDC (e.g. USDT-USDC)", "prompt_on_new": True})
+    # Triangle legs
+    pair_1_base: str = Field("SOL")
+    pair_1_quote: str = Field("USDC")
+    pair_2_base: str = Field("SOL")
+    pair_2_quote: str = Field("USDT")
+    pair_3_base: str = Field("USDT")
+    pair_3_quote: str = Field("USDC")
 
     # Capital: amount of USDC to deploy per cycle
     order_amount: Decimal = Field(Decimal("13.0"), json_schema_extra={
@@ -64,40 +68,33 @@ class AmmTriArbSolConfig(StrategyV2ConfigBase):
     # Paper trade mode: True = quotes only, no execution
     dry_run: bool = Field(True)
 
-    # Telegram alerts (profit-only). Leave blank to disable.
-    # Get token from @BotFather, chat_id from @userinfobot
+    # Telegram alerts
     telegram_token: str = Field("")
     telegram_chat_id: str = Field("")
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
-        # Gateway connectors don't register trading pairs the same way as CEX connectors.
-        # We register the connector so Hummingbot initialises it; pairs are passed directly
-        # to the Gateway HTTP client at quote/execute time.
-        markets[self.connector] = markets.get(self.connector, set()) | {
-            self.pair_1, self.pair_2, self.pair_3
+        # Register the network connector
+        market_name = f"{self.connector}_{self.chain}_{self.network}"
+        markets[market_name] = markets.get(market_name, set()) | {
+            f"{self.pair_1_base}-{self.pair_1_quote}",
+            f"{self.pair_2_base}-{self.pair_2_quote}",
+            f"{self.pair_3_base}-{self.pair_3_quote}"
         }
         return markets
 
 
 class AmmTriArbSol(StrategyV2Base):
     """
-    Triangular arbitrage: USDC → SOL → USDT → USDC via Jupiter on Solana.
-
-    Each scan cycle:
-    1. Quote all three legs sequentially via Gateway.
-    2. Compute net_out_usdc from the chain of quotes.
-    3. If net_out_usdc > order_amount * (1 + min_profitability/100) AND
-       total quote time < max_quote_age_ms → execute (or log in dry_run).
-    4. Notify via Telegram on profitable fills only.
+    Triangular arbitrage: USDC -> SOL -> USDT -> USDC via Jupiter on Solana.
     """
 
     _next_scan: float = 0.0
     _scanning: bool = False
     _total_scans: int = 0
     _total_trades: int = 0
-    _total_reverts: int = 0      # on-chain reverts / gateway errors during execution
-    _total_skips: int = 0        # quotes below min_profitability threshold
-    _total_stale: int = 0        # quotes aborted due to max_quote_age_ms
+    _total_reverts: int = 0
+    _total_skips: int = 0
+    _total_stale: int = 0
     _total_profit_usdc: Decimal = Decimal("0")
     _last_quote: Optional[Dict] = None
 
@@ -108,32 +105,8 @@ class AmmTriArbSol(StrategyV2Base):
         self._tg_token: str = config.telegram_token
         self._tg_chat_id: str = config.telegram_chat_id
 
-    def _parse_connector_and_network(self):
-        """
-        Parse config.connector which may be 'jupiter_solana' or 'solana-mainnet-beta'.
-        Returns (dex, network) where dex is the connector (e.g., 'jupiter') and
-        network is in the format 'solana-mainnet-beta'.
-        """
-        conn = self.config.connector
-        if isinstance(conn, str) and "_" in conn:
-            parts = conn.split("_", 1)
-            dex = parts[0]
-            chain = parts[1]
-            if "-" in chain:
-                network = chain
-            else:
-                network = f"{chain}-mainnet-beta"
-            return dex, network
-        if isinstance(conn, str) and "-" in conn and conn.split("-")[0].lower() in ("solana", "ethereum"):
-            # Provided a network-like string
-            return "jupiter", conn
-        return "jupiter", str(conn)
-
     def _tg_send(self, msg: str):
-        """Fire-and-forget Telegram send — bypasses NotifierBase queue entirely."""
-        self.log_with_clock(logging.INFO, f"[TG DEBUG] token={repr(self._tg_token[:10] if self._tg_token else '')} chat={repr(self._tg_chat_id)}")
         if not (self._tg_token and self._tg_chat_id):
-            self.log_with_clock(logging.WARNING, "[TG DEBUG] token or chat_id empty — skipping send")
             return
         asyncio.ensure_future(self._tg_send_async(msg))
 
@@ -145,70 +118,43 @@ class AmmTriArbSol(StrategyV2Base):
                 async with s.post(url, json={"chat_id": self._tg_chat_id, "text": msg},
                                   timeout=aiohttp.ClientTimeout(total=10)) as r:
                     if r.status != 200:
-                        self.log_with_clock(logging.WARNING, f"Telegram send failed [{r.status}]: {await r.text()}")
+                        self.logger().warning(f"Telegram send failed [{r.status}]: {await r.text()}")
         except Exception as e:
-            self.log_with_clock(logging.WARNING, f"Telegram send error: {e}")
+            self.logger().warning(f"Telegram send error: {e}")
 
     async def on_start(self):
+        self.logger().info(f"Strategy started in {'DRY RUN' if self.config.dry_run else 'LIVE'} mode.")
         if not self.config.dry_run:
             asyncio.ensure_future(self._preflight_check())
 
     async def _preflight_check(self):
-        """
-        Pre-flight safety checks before live trading begins.
-        Halts the strategy (sets _next_scan far in the future) if any check fails.
-        """
-        network = self.config.connector
         try:
             balances = await self._gateway.get_balances(
-                chain="solana", network="mainnet-beta",
-                address="",   # Gateway uses the defaultWallet from solana.yml
+                chain=self.config.chain,
+                network=self.config.network,
+                address="", # Uses defaultWallet
                 token_symbols=["USDC", "SOL"],
             )
             usdc = Decimal(str(balances.get("USDC", 0)))
             sol = Decimal(str(balances.get("SOL", 0)))
         except Exception as e:
-            self.log_with_clock(logging.ERROR, f"[PRE-FLIGHT] Balance check failed: {e}. Trading halted.")
+            self.logger().error(f"[PRE-FLIGHT] Balance check failed: {e}. Trading halted.")
             self._next_scan = float("inf")
             return
 
         errors = []
-
-        # Guard 1: order_amount must not exceed 95% of available USDC
-        max_safe = usdc * Decimal("0.95")
-        if self.config.order_amount > max_safe:
-            errors.append(
-                f"order_amount ({self.config.order_amount} USDC) > 95% of balance ({max_safe:.4f} USDC). "
-                f"Reduce order_amount or add more USDC."
-            )
-
-        # Guard 2: must have at least 0.05 SOL for gas
-        min_sol = Decimal("0.05")
-        if sol < min_sol:
-            errors.append(
-                f"SOL balance ({sol:.4f}) < {min_sol} SOL minimum for gas. "
-                f"Send at least {min_sol} SOL to your BackpackWallet."
-            )
+        if self.config.order_amount > usdc * Decimal("0.95"):
+            errors.append(f"order_amount exceeds 95% of USDC balance ({usdc:.4f})")
+        if sol < Decimal("0.05"):
+            errors.append(f"SOL balance ({sol:.4f}) too low for gas (min 0.05)")
 
         if errors:
             for err in errors:
-                self.log_with_clock(logging.ERROR, f"[PRE-FLIGHT] ❌ {err}")
-            self.log_with_clock(logging.ERROR, "[PRE-FLIGHT] Trading halted. Fix the above and restart.")
+                self.logger().error(f"[PRE-FLIGHT] ❌ {err}")
             self._next_scan = float("inf")
             return
 
-        self.log_with_clock(
-            logging.INFO,
-            f"[PRE-FLIGHT] ✅ USDC={usdc:.4f}  SOL={sol:.4f}  "
-            f"order_amount={self.config.order_amount}  — all checks passed. LIVE trading active."
-        )
-
-    async def on_stop(self):
-        pass
-
-    # ------------------------------------------------------------------
-    # Tick entry point
-    # ------------------------------------------------------------------
+        self.logger().info(f"[PRE-FLIGHT] ✅ USDC={usdc:.4f} SOL={sol:.4f}. LIVE active.")
 
     def on_tick(self):
         if self.current_timestamp < self._next_scan or self._scanning:
@@ -216,10 +162,6 @@ class AmmTriArbSol(StrategyV2Base):
         self._next_scan = self.current_timestamp + self.config.scan_interval
         self._scanning = True
         asyncio.ensure_future(self._scan_and_act())
-
-    # ------------------------------------------------------------------
-    # Core scan loop
-    # ------------------------------------------------------------------
 
     async def _scan_and_act(self):
         try:
@@ -230,379 +172,184 @@ class AmmTriArbSol(StrategyV2Base):
             self._last_quote = quote
             self._total_scans += 1
 
-            # --- Staleness gate (before profitability to avoid false FIRE log) ---
             if quote["elapsed_ms"] > self.config.max_quote_age_ms:
                 self._total_stale += 1
-                self.log_with_clock(
-                    logging.WARNING,
-                    f"[SCAN #{self._total_scans}] Quotes stale "
-                    f"({quote['elapsed_ms']:.0f}ms > {self.config.max_quote_age_ms}ms). Skipping."
-                )
+                self.logger().warning(f"[SCAN #{self._total_scans}] Quotes stale ({quote['elapsed_ms']:.0f}ms). Skipping.")
                 return
 
             net_out = quote["net_out_usdc"]
             profit_pct = (net_out - self.config.order_amount) / self.config.order_amount * 100
-            threshold = self.config.order_amount * (1 + self.config.min_profitability / 100)
-
-            # --- Profitability gate ---
-            if net_out < threshold:
+            
+            if profit_pct < self.config.min_profitability:
                 self._total_skips += 1
-                self.log_with_clock(
-                    logging.INFO,
-                    f"[SCAN #{self._total_scans}] "
-                    f"net_out={net_out:.4f} USDC  profit={profit_pct:.3f}%  "
-                    f"quote_ms={quote['elapsed_ms']:.0f}  ⏳ below {self.config.min_profitability}%"
-                )
+                self.logger().info(f"[SCAN #{self._total_scans}] net_out={net_out:.4f} USDC profit={profit_pct:.3f}% below {self.config.min_profitability}%")
                 return
 
-            self.log_with_clock(
-                logging.INFO,
-                f"[SCAN #{self._total_scans}] "
-                f"net_out={net_out:.4f} USDC  profit={profit_pct:.3f}%  "
-                f"quote_ms={quote['elapsed_ms']:.0f}  ✅ FIRE"
-            )
+            self.logger().info(f"[SCAN #{self._total_scans}] net_out={net_out:.4f} USDC profit={profit_pct:.3f}% ✅ FIRE")
             await self._execute_triangle(quote, profit_pct)
 
         except Exception as e:
-            self.log_with_clock(logging.ERROR, f"Scan error: {e}")
+            self.logger().error(f"Scan error: {e}")
         finally:
             self._scanning = False
 
-    # ------------------------------------------------------------------
-    # Quote all three legs
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _calc_output(response: dict, input_amount: Decimal) -> Decimal:
-        """
-        Compute output token amount from a Gateway quote_swap response.
-
-        Gateway returns a 'price' field which is the exchange rate:
-          - For SELL base→quote: price = quote_out / base_in  (e.g. USDT per SOL ≈ 150)
-          - output = input_amount * price
-
-        We prefer 'amountOut' when it is a plausible token quantity (not a dollar-value
-        proxy), falling back to price-based calculation.  A sanity check ensures
-        amountOut is not suspiciously large relative to the price-derived estimate.
-        """
-        price_val = response.get("price")
-        if price_val is None:
-            return Decimal("0")
+    async def _get_quote(self, base: str, quote: str, amount: Decimal, side: TradeType) -> Optional[Decimal]:
+        """Call Gateway quote_swap (uses GET)"""
         try:
-            price = Decimal(str(price_val))
-        except Exception:
-            return Decimal("0")
-        if price <= 0:
-            return Decimal("0")
-
-        # Primary: price-based calculation (always correct regardless of amountOut units)
-        return input_amount * price
+            network_full = f"{self.config.chain}-{self.config.network}"
+            res = await self._gateway.quote_swap(
+                network=network_full,
+                base_asset=base,
+                quote_asset=quote,
+                amount=amount,
+                side=side,
+                dex=self.config.connector,
+                trading_type="router",
+                slippage_pct=self.config.slippage_pct,
+                fail_silently=True
+            )
+            if res and "amountOut" in res:
+                return Decimal(str(res["amountOut"]))
+            elif res and "price" in res:
+                price = Decimal(str(res["price"]))
+                return amount * price
+        except Exception as e:
+            self.logger().warning(f"Quote failed for {base}-{quote} ({side.name}): {e}")
+        return None
 
     async def _get_triangle_quote(self) -> Optional[Dict]:
-        """
-        Quotes the triangle: USDC→SOL→USDT→USDC.
-        If use_jupiter_routing is enabled, performs a single atomic route quote.
-        Otherwise, falls back to sequential quotes.
-        """
-        network = self.config.connector  # "jupiter_solana"
-        slippage = self.config.slippage_pct
-        amount = self.config.order_amount
-        path = ["USDC", "SOL", "USDT", "USDC"]
-
         t0 = time.monotonic()
+        amount = self.config.order_amount
 
-        if self.config.use_jupiter_routing:
-            try:
-                # Atomic quote via Gateway Router price endpoint
-                # This fetches a single Route covering all 3 legs
-                quote_params = {
-                    "connector": "jupiter",
-                    "chain": "solana",
-                    "network": "mainnet-beta",
-                    "token_path": path,
-                    "amount": str(amount),
-                    "slippage_pct": str(slippage)
-                }
-                
-                res = await self._gateway.call_endpoint(
-                    method="POST",
-                    url="connectors/jupiter/router/price",
-                    data=quote_params
-                )
-                
-                net_out_usdc = Decimal(str(res.get("amountOut", "0")))
-                if net_out_usdc <= 0:
-                    return None
-                    
-                elapsed_ms = (time.monotonic() - t0) * 1000
-                return {
-                    "sol_amount": Decimal("0"), # intermediate amounts not provided in atomic quote
-                    "usdt_amount": Decimal("0"),
-                    "net_out_usdc": net_out_usdc,
-                    "elapsed_ms": elapsed_ms,
-                    "prices": {
-                        "atomic_route": "true"
-                    },
-                }
-            except Exception as e:
-                self.log_with_clock(logging.WARNING, f"Atomic quote failed: {e}. Falling back to sequential.")
+        # Leg 1: USDC -> SOL (BUY SOL with USDC)
+        sol_out = await self._get_quote(self.config.pair_1_base, self.config.pair_1_quote, amount, TradeType.BUY)
+        if sol_out is None or sol_out <= 0: return None
 
-        # --- Sequential fallback ---
-        try:
-            # Leg 1: SELL USDC → SOL  (price = SOL per USDC, e.g. ~0.00667 at $150/SOL)
-            q1 = await self._gateway.quote_swap(
-                network=network,
-                base_asset="USDC",
-                quote_asset="SOL",
-                amount=amount,
-                side=TradeType.SELL,
-                dex="jupiter",
-                trading_type="router",
-                slippage_pct=slippage,
-            )
-            sol_amount = self._calc_output(q1, amount)
-            if sol_amount <= 0:
-                self.log_with_clock(logging.WARNING, f"Leg 1 quote invalid: {q1}")
-                return None
+        # Leg 2: SOL -> USDT (SELL SOL for USDT)
+        usdt_out = await self._get_quote(self.config.pair_2_base, self.config.pair_2_quote, sol_out, TradeType.SELL)
+        if usdt_out is None or usdt_out <= 0: return None
 
-            # Leg 2: SELL SOL → USDT  (price = USDT per SOL, e.g. ~150)
-            q2 = await self._gateway.quote_swap(
-                network=network,
-                base_asset="SOL",
-                quote_asset="USDT",
-                amount=sol_amount,
-                side=TradeType.SELL,
-                dex="jupiter",
-                trading_type="router",
-                slippage_pct=slippage,
-            )
-            usdt_amount = self._calc_output(q2, sol_amount)
-            if usdt_amount <= 0:
-                self.log_with_clock(logging.WARNING, f"Leg 2 quote invalid: {q2}")
-                return None
-
-            # Leg 3: SELL USDT → USDC  (price = USDC per USDT, e.g. ~1.0)
-            q3 = await self._gateway.quote_swap(
-                network=network,
-                base_asset="USDT",
-                quote_asset="USDC",
-                amount=usdt_amount,
-                side=TradeType.SELL,
-                dex="jupiter",
-                trading_type="router",
-                slippage_pct=slippage,
-            )
-            net_out_usdc = self._calc_output(q3, usdt_amount)
-            if net_out_usdc <= 0:
-                self.log_with_clock(logging.WARNING, f"Leg 3 quote invalid: {q3}")
-                return None
-
-        except Exception as e:
-            self.log_with_clock(logging.WARNING, f"Quote failed: {e}")
-            return None
-
-        # Sanity check: net_out should be within 50% of input (real arb is tiny)
-        ratio = net_out_usdc / amount
-        if ratio > Decimal("1.5") or ratio < Decimal("0.5"):
-            self.log_with_clock(
-                logging.WARNING,
-                f"Quote sanity check failed: net_out={net_out_usdc:.4f} USDC on "
-                f"{amount} USDC input (ratio={ratio:.4f}). "
-                f"Prices: leg1={q1.get('price')} leg2={q2.get('price')} leg3={q3.get('price')}. "
-                f"Skipping."
-            )
-            return None
+        # Leg 3: USDT -> USDC (SELL USDT for USDC)
+        usdc_out = await self._get_quote(self.config.pair_3_base, self.config.pair_3_quote, usdt_out, TradeType.SELL)
+        if usdc_out is None or usdc_out <= 0: return None
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         return {
-            "sol_amount": sol_amount,
-            "usdt_amount": usdt_amount,
-            "net_out_usdc": net_out_usdc,
+            "net_out_usdc": usdc_out,
             "elapsed_ms": elapsed_ms,
-            "prices": {
-                "leg1_sol_per_usdc": q1.get("price"),
-                "leg2_usdt_per_sol": q2.get("price"),
-                "leg3_usdc_per_usdt": q3.get("price"),
-            },
+            "sol_amount": sol_out,
+            "usdt_amount": usdt_out,
         }
 
-    async def execute_atomic_triangle(self, path: list, amount: Decimal):
-        """
-        Executes a multi-leg triangle swap atomically via Jupiter Router.
-        path: ["USDC", "SOL", "USDT", "USDC"]
-        """
-        try:
-            # 1. Build the multi-hop routing request
-            # This tells Gateway to find a single route covering all 3 legs
-            order_params = {
-                "connector": "jupiter",
-                "chain": "solana",
-                "network": "mainnet-beta",
-                "token_path": path,
-                "amount": str(amount),
-                "slippage_pct": str(self.config.slippage_pct),
-                "wait_for_confirmation": True
-            }
-
-            self.log_with_clock(logging.INFO, f"Initiating Atomic Triangle: {' -> '.join(path)}")
-
-            # 2. Call the Gateway Router Execute endpoint
-            # This is the "Magic Hook" that forces atomicity
-            result = await self._gateway.call_endpoint(
-                method="POST",
-                url="connectors/jupiter/router/execute-swap",
-                data=order_params
-            )
-
-            if result.get("network_transaction_hash"):
-                self.log_with_clock(logging.INFO, f"Atomic Swap Success! Hash: {result['network_transaction_hash']}")
-                return result
-            else:
-                self.log_with_clock(logging.ERROR, f"Atomic Swap Failed: {result.get('message', 'Unknown Error')}")
-                return result
-
-        except Exception as e:
-            self.log_with_clock(logging.ERROR, f"Critical failure in atomic execution: {str(e)}")
-            return {"error": str(e)}
-
-    # ------------------------------------------------------------------
-    # Execute (or dry-run)
-    # ------------------------------------------------------------------
-
     async def _execute_triangle(self, quote: Dict, profit_pct: Decimal):
-        network = self.config.connector
-        slippage = self.config.slippage_pct
         amount = self.config.order_amount
-        sol_amount = quote["sol_amount"]
-        usdt_amount = quote["usdt_amount"]
         net_out = quote["net_out_usdc"]
         profit_usdc = net_out - amount
+        ts = datetime.fromtimestamp(self.current_timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         if self.config.dry_run:
-            prices = quote.get("prices", {})
-            ts = datetime.fromtimestamp(self.current_timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            
-            if self.config.use_jupiter_routing and prices.get("atomic_route"):
-                msg = (
-                    f"[DRY RUN] ATOMIC TRI-ARB opportunity @ {ts}  "
-                    f"{amount} USDC → [ATOMIC ROUTE] → {net_out:.4f} USDC  "
-                    f"profit={profit_pct:.3f}% (+{profit_usdc:.4f} USDC)"
-                )
-            else:
-                msg = (
-                    f"[DRY RUN] TRI-ARB opportunity @ {ts}  "
-                    f"{amount} USDC → {sol_amount:.6f} SOL → {usdt_amount:.4f} USDT → {net_out:.4f} USDC  "
-                    f"profit={profit_pct:.3f}% (+{profit_usdc:.4f} USDC)  "
-                    f"prices: SOL/USDC={prices.get('leg1_sol_per_usdc')} "
-                    f"USDT/SOL={prices.get('leg2_usdt_per_sol')} "
-                    f"USDC/USDT={prices.get('leg3_usdc_per_usdt')}"
-                )
-            self.log_with_clock(logging.INFO, msg)
+            msg = f"[DRY RUN] TRI-ARB @ {ts} | {amount} USDC -> {quote['sol_amount']:.4f} SOL -> {quote['usdt_amount']:.4f} USDT -> {net_out:.4f} USDC | profit={profit_pct:.3f}% (+{profit_usdc:.4f} USDC)"
+            self.logger().info(msg)
             self._tg_send(msg)
             return
 
-        # --- Atomic execution via Jupiter Router ---
+        network_full = f"{self.config.chain}-{self.config.network}"
+        
+        # --- 1. Atomic Try ---
         if self.config.use_jupiter_routing:
-            result = await self.execute_atomic_triangle(
-                path=["USDC", "SOL", "USDT", "USDC"],
-                amount=amount
-            )
-            
-            tx_hash = result.get("network_transaction_hash")
-            if tx_hash:
-                actual_out = Decimal(str(result.get("amountOut") or net_out))
-                actual_profit = actual_out - amount
-                self._total_trades += 1
-                self._total_profit_usdc += actual_profit
-                ts = datetime.fromtimestamp(self.current_timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                msg = (
-                    f"[TRI-ARB] ✅ Atomic Trade #{self._total_trades} @ {ts}  "
-                    f"profit={actual_profit:+.4f} USDC  "
-                    f"cumulative={self._total_profit_usdc:+.4f} USDC  "
-                    f"hash: {tx_hash}"
+            self.logger().info("Initiating Atomic Triangle Execution via Gateway...")
+            try:
+                result = await self._gateway.execute_tri_arb(
+                    network=network_full,
+                    token_a="USDC",
+                    token_b="SOL",
+                    token_c="USDT",
+                    amount=amount,
+                    slippage_pct=self.config.slippage_pct
                 )
-                self.log_with_clock(logging.INFO, msg)
-                self._tg_send(msg)
-            else:
-                self._total_reverts += 1
-                self.log_with_clock(logging.WARNING, f"[TRI-ARB] ⚠️ Atomic Swap failed: {result.get('message', 'Check logs')}")
+                if self._handle_execution_result(result, amount, net_out, ts):
+                    return
+            except Exception as e:
+                err_str = str(e)
+                if "not found" in err_str.lower() or "404" in err_str:
+                    self.logger().warning(f"Atomic execution route not found. {'Falling back to sequential' if self.config.allow_sequential_fallback else 'Aborting'}.")
+                else:
+                    self.logger().error(f"Atomic execution failed: {e}")
+                
+        # --- 2. Sequential Fallback ---
+        if not self.config.allow_sequential_fallback:
             return
 
-        # --- Legacy sequential execution via Gateway endpoint ---
-        # Gateway handles leg sequencing and unwind server-side.
-        # status 1 = full success, -1 = leg1 failed (nothing spent), -2 = partial (unwind attempted)
-        result = await self._gateway.execute_tri_arb(
-            network=network,
-            token_a="USDC",
-            token_b="SOL",
-            token_c="USDT",
-            amount=amount,
-            slippage_pct=slippage,
-        )
+        self.logger().info("Executing triangle legs sequentially...")
+        try:
+            # Leg 1: BUY SOL with USDC
+            r1 = await self._gateway.execute_swap(network=network_full, base_asset="SOL", quote_asset="USDC", amount=amount, side=TradeType.BUY, dex=self.config.connector, trading_type="router", slippage_pct=self.config.slippage_pct)
+            if "hash" not in r1 and "signature" not in r1 and "network_transaction_hash" not in r1:
+                self.logger().error(f"Leg 1 failed: {r1}")
+                return
+            
+            # Leg 2: SELL SOL for USDT
+            sol_to_sell = quote["sol_amount"]
+            r2 = await self._gateway.execute_swap(network=network_full, base_asset="SOL", quote_asset="USDT", amount=sol_to_sell, side=TradeType.SELL, dex=self.config.connector, trading_type="router", slippage_pct=self.config.slippage_pct)
+            if "hash" not in r2 and "signature" not in r2 and "network_transaction_hash" not in r2:
+                self.logger().error(f"Leg 2 failed: {r2}. MANUAL UNWIND MAY BE NEEDED.")
+                return
 
+            # Leg 3: SELL USDT for USDC
+            usdt_to_sell = quote["usdt_amount"]
+            r3 = await self._gateway.execute_swap(network=network_full, base_asset="USDT", quote_asset="USDC", amount=usdt_to_sell, side=TradeType.SELL, dex=self.config.connector, trading_type="router", slippage_pct=self.config.slippage_pct)
+            
+            actual_profit = net_out - amount # Approximation for sequential
+            self._total_trades += 1
+            self._total_profit_usdc += actual_profit
+            msg = f"[TRI-ARB] ✅ Sequential Success #{self._total_trades} @ {ts} | profit={actual_profit:+.4f} USDC"
+            self.logger().info(msg)
+            self._tg_send(msg)
+
+        except Exception as e:
+            self.logger().error(f"Sequential execution error: {e}")
+
+    def _handle_execution_result(self, result: Dict, amount: Decimal, net_out: Decimal, ts: str) -> bool:
         status = result.get("status")
-        error = result.get("error", "")
-
+        error = result.get("error", "Unknown error")
         if status == 1:
-            actual_out = Decimal(str(result.get("amountOut") or net_out))
+            actual_out = Decimal(str(result.get("amountOut", net_out)))
             actual_profit = actual_out - amount
             self._total_trades += 1
             self._total_profit_usdc += actual_profit
-            ts = datetime.fromtimestamp(self.current_timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             msg = (
-                f"[TRI-ARB] ✅ Trade #{self._total_trades} @ {ts}  "
-                f"profit={actual_profit:+.4f} USDC  "
-                f"cumulative={self._total_profit_usdc:+.4f} USDC  "
-                f"sigs: {result.get('leg1Sig','?')} / {result.get('leg2Sig','?')} / {result.get('leg3Sig','?')}"
+                f"[TRI-ARB] ✅ Atomic Success #{self._total_trades} @ {ts} | "
+                f"profit={actual_profit:+.4f} USDC | cumulative={self._total_profit_usdc:+.4f} USDC | "
+                f"sigs: {result.get('leg1Sig','?')}/{result.get('leg2Sig','?')}/{result.get('leg3Sig','?')}"
             )
-            self.log_with_clock(logging.INFO, msg)
+            self.logger().info(msg)
             self._tg_send(msg)
-
+            return True
         elif status == -1:
-            # Leg 1 failed — nothing was spent, safe to retry next cycle
             self._total_reverts += 1
-            self.log_with_clock(logging.WARNING, f"[TRI-ARB] ⚠️ Leg 1 failed (nothing spent): {error}")
-
-        else:
-            # status == -2: partial fill, unwind attempted by Gateway
+            self.logger().warning(f"[TRI-ARB] ⚠️ Leg 1 failed (nothing spent): {error}")
+            return True
+        elif status == -2:
             self._total_reverts += 1
             unwind_sig = result.get("unwindSig")
             if unwind_sig:
-                self.log_with_clock(logging.WARNING, f"[TRI-ARB] 🔄 Partial fill, unwind OK (sig={unwind_sig}): {error}")
+                self.logger().warning(f"[TRI-ARB] 🔄 Partial fill, unwind OK (sig={unwind_sig}): {error}")
             else:
-                msg = f"[TRI-ARB] 🚨 CRITICAL: Partial fill AND unwind failed. MANUAL ACTION REQUIRED. {error}"
-                self.log_with_clock(logging.CRITICAL, msg)
+                msg = f"[TRI-ARB] 🚨 CRITICAL: Partial fill AND unwind failed! {error}"
+                self.logger().critical(msg)
                 self._tg_send(msg)
-
-    # ------------------------------------------------------------------
-    # Status display
-    # ------------------------------------------------------------------
+            return True
+        return False
 
     def format_status(self) -> str:
-        mode = "DRY RUN (paper)" if self.config.dry_run else "LIVE"
+        mode = "DRY RUN" if self.config.dry_run else "LIVE"
         lines = [
-            "",
-            f"  AMM Triangular Arbitrage — Solana/Jupiter  [{mode}]",
-            f"  Route: USDC → SOL → USDT → USDC",
-            f"  Capital: {self.config.order_amount} USDC  |  "
-            f"Min profit: {self.config.min_profitability}%  |  "
-            f"Slippage: {self.config.slippage_pct}%",
-            f"  Scans: {self._total_scans}  |  "
-            f"Trades: {self._total_trades}  |  "
-            f"Skips: {self._total_skips}  |  "
-            f"Reverts: {self._total_reverts}  |  "
-            f"Stale: {self._total_stale}",
-            f"  Cumulative profit: +{self._total_profit_usdc:.4f} USDC",
-            "",
+            f"\n  AMM Tri-Arb Solana/Jupiter [{mode}]",
+            f"  Scans: {self._total_scans} | Trades: {self._total_trades} | Skips: {self._total_skips} | Reverts: {self._total_reverts}",
+            f"  Profit: {self._total_profit_usdc:+.4f} USDC",
         ]
         if self._last_quote:
             q = self._last_quote
             profit_pct = (q["net_out_usdc"] - self.config.order_amount) / self.config.order_amount * 100
-            lines += [
-                f"  Last quote ({q['elapsed_ms']:.0f}ms):",
-                f"    {self.config.order_amount} USDC → {q['sol_amount']:.6f} SOL "
-                f"→ {q['usdt_amount']:.4f} USDT → {q['net_out_usdc']:.4f} USDC  "
-                f"({profit_pct:+.3f}%)",
-                "",
-            ]
+            lines.append(f"  Last: {self.config.order_amount} USDC -> {q['sol_amount']:.4f} SOL -> {q['usdt_amount']:.4f} USDT -> {q['net_out_usdc']:.4f} USDC ({profit_pct:+.3f}%)")
         return "\n".join(lines)

@@ -2,7 +2,7 @@ defaultNetwork: mainnet-beta
 defaultWallet: 6qKBYYRHPYbktDEDRXqwiSqMWxEUuXdvDj451PcyQY15
 defaultNetworks:
   - mainnet-beta
-rpcProvider: helius
+# rpcProvider: helius
 jupiter:
   enabled: true
   routerApiUrl: https://quote-api.jup.ag/v6
